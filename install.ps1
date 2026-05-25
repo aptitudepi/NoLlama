@@ -52,9 +52,21 @@ if (Test-Path $VenvDir) {
 }
 
 if (-not (Test-Path $VenvDir)) {
-    Write-Host "Creating Python venv..."
-    python -m venv $VenvDir
-    if (-not $?) { Write-Host "ERROR: Failed to create venv. Is Python installed?" -ForegroundColor Red; Pop-Location; exit 1 }
+    # Windows ships 'python'; most Linux distros only ship 'python3'. Find
+    # whichever is on PATH for the bootstrap. After the venv exists, plain
+    # 'python' resolves to the venv's binary on both platforms.
+    $sysPython = @(
+        (Get-Command python  -ErrorAction SilentlyContinue),
+        (Get-Command python3 -ErrorAction SilentlyContinue)
+    ) | Where-Object { $_ } | Select-Object -First 1
+    if (-not $sysPython) {
+        Write-Host "ERROR: Neither 'python' nor 'python3' found in PATH." -ForegroundColor Red
+        Write-Host "  Install Python 3.10+ (python.org on Windows, your package manager on Linux)." -ForegroundColor Yellow
+        Pop-Location; exit 1
+    }
+    Write-Host "Creating Python venv (using $($sysPython.Source))..."
+    & $sysPython.Source -m venv $VenvDir
+    if (-not $?) { Write-Host "ERROR: Failed to create venv." -ForegroundColor Red; Pop-Location; exit 1 }
     Write-Host "[OK] venv created"
 }
 

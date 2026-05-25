@@ -1,5 +1,63 @@
 # TODO
 
+## Spinoff idea: claude-code CLI as Ollama backend (2026-05-26)
+
+**Not part of NoLlama.** Separate repo if pursued. NoLlama is local-Intel
+inference; this is the opposite (cloud Anthropic via local CLI). Captured
+here so it doesn't get lost.
+
+### The idea
+
+`claude-code -p "<prompt>"` runs in non-interactive print-mode: prompt
+in via argv/stdin, response out via stdout, no REPL. So in principle a
+small bridge could:
+
+1. Listen on `localhost:11434` speaking Ollama API
+2. Translate each `/api/generate` or `/api/chat` request into a
+   `claude-code -p` invocation
+3. Stream stdout back as NDJSON
+
+Result: any Ollama-aware tool (Open WebUI, Continue, mobile Ollama
+clients, etc.) gets Claude as the model, using whatever auth the
+local `claude-code` install already has.
+
+### IPC choice
+
+- **Anonymous pipes** (`subprocess.Popen(stdin=PIPE, stdout=PIPE)`) —
+  simplest, cross-platform, one-shot per request. Probably the right
+  default.
+- **Named pipes** — Windows has them too (`\\.\pipe\<name>`), and
+  `System.IO.Pipes.NamedPipeServerStream` is cross-platform via .NET.
+  Worth it only if the bridge wants a long-lived `claude-code` process
+  serving many requests (would need claude-code to support a
+  daemon/streaming-stdin mode, which `-p` doesn't currently).
+
+### Practical concerns before pursuing
+
+- **claude-code is interactive-oriented.** `-p` mode works but isn't
+  the supported "stable backend" surface. Behavior might change between
+  releases.
+- **Session state.** Ollama clients expect stateless or
+  client-managed history. claude-code might carry conversation context
+  across invocations in ways that surprise an Ollama client.
+- **Per-request startup cost.** Spawning claude-code per request adds
+  latency. For chat that's fine; for batch agents it's not.
+- **Auth model mismatch.** claude-code uses the user's logged-in
+  account; that's a single tenant. Fine for personal use, doesn't
+  scale to a shared server.
+- **Already exists upstream?** Worth checking if Anthropic ships a
+  similar bridge or if anyone in the community has one — don't reinvent.
+
+### If pursued
+
+One Python file (`claude_ollama_bridge.py`), uses subprocess.PIPE,
+maps `POST /api/chat` and `POST /api/generate` to `claude-code -p`,
+ignores `/api/pull`/`/api/delete` (stubs returning success), forwards
+stdout as NDJSON streaming response. Reusable shape from NoLlama's
+existing `ollama_app` Flask blueprint.
+
+---
+
 ## CPU as primary on NPU/GPU systems — settled non-goal (2026-05-26)
 
 `install.ps1` already offers CPU as the primary slot when no NPU
