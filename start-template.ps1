@@ -12,17 +12,42 @@ function Open-Url($url) {
     try { Start-Process $url } catch { Write-Host "  Open $url in your browser" -ForegroundColor DarkGray }
 }
 
+function Test-PortFree($port) {
+    # Cross-platform: System.Net.Sockets.TcpListener works on Windows + Linux pwsh.
+    try {
+        $l = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $port)
+        $l.Start(); $l.Stop()
+        return $true
+    } catch { return $false }
+}
+
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Port = 8000
+
+# Pick an available port in 8000..8009. Hard fail if all are busy — bumping
+# the default by ten is plenty for the usual case (orphan NoLlama, another
+# local dev server); ten in a row means investigate, don't keep climbing.
+$BasePort = 8000
+$Port = $null
+for ($p = $BasePort; $p -lt ($BasePort + 10); $p++) {
+    if (Test-PortFree $p) { $Port = $p; break }
+}
+if (-not $Port) {
+    Write-Host "  ERROR: ports $BasePort..$($BasePort + 9) all in use." -ForegroundColor Red
+    Write-Host "  Free one (likely an orphan server) and retry." -ForegroundColor Red
+    exit 1
+}
+if ($Port -ne $BasePort) {
+    Write-Host "  Port $BasePort is in use; using $Port instead." -ForegroundColor Yellow
+}
 $Url = "http://localhost:$Port"
 
 # Activate venv (Scripts on Windows, bin on POSIX)
 $VenvBinDir = if ($IsWindows) { "Scripts" } else { "bin" }
 & (Join-Path $ScriptDir "venv" $VenvBinDir "Activate.ps1")
 
-# Start server in background
-$AllArgs = @((Join-Path $ScriptDir "nollama.py"))
+# Start server in background — pass the port the launcher picked.
+$AllArgs = @((Join-Path $ScriptDir "nollama.py"), "--port", "$Port")
 if ($ServerArgs) {
     $AllArgs += $ServerArgs.Split(" ", [StringSplitOptions]::RemoveEmptyEntries)
 }

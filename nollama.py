@@ -286,6 +286,96 @@ class DeviceSlot:
         """Signal the current generation to stop."""
         self._cancel.set()
 
+    def stream_vlm(self, text_prompt, images, gen, completion_id, created, t0):
+        """VLM generate — SSE streaming. openvino-genai 2026.1+."""
+        token_queue = Queue()
+        token_count = 0
+        gen_error = [None]
+
+        def streamer_callback(token):
+            if self._cancel.is_set():
+                return True
+            token_queue.put(token)
+            return False
+
+        def _generate():
+            try:
+                with self.lock:
+                    self._cancel.clear()
+                    if images:
+                        imgs = images[0] if len(images) == 1 else images
+                        self.pipe.generate(
+                            prompt=text_prompt, images=imgs,
+                            generation_config=gen, streamer=streamer_callback,
+                        )
+                    else:
+                        self.pipe.generate(
+                            prompt=text_prompt, generation_config=gen,
+                            streamer=streamer_callback,
+                        )
+                    self.last_used = time.time()
+            except Exception as e:
+                gen_error[0] = e
+                print(f"{datetime.now():%H:%M:%S} !! [{self.device_name}] "
+                      f"VLM generate error: {e}", flush=True)
+            finally:
+                token_queue.put(None)
+
+        t = threading.Thread(target=_generate, daemon=True)
+        t.start()
+
+        try:
+            chunk = {
+                "id": completion_id, "object": "chat.completion.chunk",
+                "created": created, "model": self.model_name,
+                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+            }
+            yield f"data: {json.dumps(chunk)}\n\n"
+
+            while True:
+                try:
+                    token = token_queue.get(timeout=180)
+                except Empty:
+                    break
+                if token is None:
+                    break
+                token_count += 1
+                chunk = {
+                    "id": completion_id, "object": "chat.completion.chunk",
+                    "created": created, "model": self.model_name,
+                    "choices": [{"index": 0, "delta": {"content": token}, "finish_reason": None}],
+                }
+                yield f"data: {json.dumps(chunk)}\n\n"
+
+            was_cancelled = self._cancel.is_set()
+            if gen_error[0] is not None:
+                err_chunk = {
+                    "id": completion_id, "object": "chat.completion.chunk",
+                    "created": created, "model": self.model_name,
+                    "choices": [{"index": 0, "delta": {
+                        "content": f"\n[error: {gen_error[0]}]"
+                    }, "finish_reason": "error"}],
+                }
+                yield f"data: {json.dumps(err_chunk)}\n\n"
+            else:
+                finish_reason = "cancelled" if was_cancelled else "stop"
+                chunk = {
+                    "id": completion_id, "object": "chat.completion.chunk",
+                    "created": created, "model": self.model_name,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+                }
+                yield f"data: {json.dumps(chunk)}\n\n"
+            yield "data: [DONE]\n\n"
+        finally:
+            self._cancel.set()
+
+        elapsed = time.perf_counter() - t0
+        tps = token_count / elapsed if elapsed > 0 else 0
+        tag = " (cancelled)" if was_cancelled else (" (error)" if gen_error[0] else "")
+        print(f"{datetime.now():%H:%M:%S} -> [{self.device_name}] "
+              f"VLM {token_count} tokens in {elapsed:.1f}s ({tps:.1f} tok/s){tag}",
+              flush=True)
+
     def stream_llm(self, raw_messages, gen, completion_id, created, t0):
         """LLM generate — SSE streaming."""
         history = ovg.ChatHistory()
@@ -711,6 +801,13 @@ def chat_completions():
 
     # --- VLM path ---
     if slot.model_type == "vlm":
+        if stream:
+            return Response(
+                slot.stream_vlm(text_prompt, images, gen, completion_id, created, t0),
+                mimetype="text/event-stream",
+                headers={"X-Device": slot.device_name, "X-Model": slot.model_name},
+            )
+
         try:
             text = slot.generate_vlm(text_prompt, images, gen)
         except Exception as e:

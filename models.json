@@ -43,7 +43,7 @@
             "hf_id": "OpenVINO/Qwen3-VL-8B-Instruct-int4-ov",
             "source": "pre-exported",
             "est_size_gb": 6,
-            "notes": "Untested. Newer Qwen-VL generation, pre-exported by Intel (May 2026). Expected upgrade over 2.5-VL — verify before recommending."
+            "notes": "Recommended. Newer Qwen-VL generation. Verified on Xe-LPG iGPU: accurate OCR, color/count, no hallucination on empty input."
         },
         {
             "name": "Qwen2.5-VL 3B (INT8, convert)",

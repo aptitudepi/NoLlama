@@ -59,8 +59,8 @@ Features:
 | Device | Examples | What it does | Streaming? |
 |---|---|---|---|
 | NPU (Intel AI Boost) | Core Ultra 7 258V | Text chat via LLMPipeline. Low power, sustained workload sweet spot. | Yes |
-| ARC iGPU | ARC 140V (Core Ultra) | Vision + text, or bigger LLM | VLM: no, LLM: yes |
-| ARC discrete | A770, B580 | Same as iGPU, more VRAM for larger models | VLM: no, LLM: yes |
+| ARC iGPU | ARC 140V (Core Ultra) | Vision + text, or bigger LLM | Yes (VLM streams in 2026.1+) |
+| ARC discrete | A770, B580 | Same as iGPU, more VRAM for larger models | Yes (VLM streams in 2026.1+) |
 | CPU | Any Intel CPU | Fallback for everything. On desktops with DDR5 and many cores, often *faster* than NPU — see benchmarks. | Yes |
 
 ### Intel only — by design
@@ -111,9 +111,10 @@ python benchmark.py --same-1 a.jpg --same-2 b.jpg --diff-1 c.jpg --diff-2 d.jpg
 | Same vehicle? (2 images) | 3.8s |
 | Different vehicles? (2 images) | 3.8s |
 
-VLMPipeline doesn't stream, so tok/s can't be measured directly.
-Subtracting prompt overhead, ARC iGPU generation is roughly 3x faster
-than NPU for this hardware.
+Above benchmarks were captured before VLMPipeline gained streaming
+support (openvino-genai 2026.1). VLM now streams on Arc 140V at
+roughly 11 tok/s decode after prefill — see
+`benchmark.py --backend vlm` for fresh numbers.
 
 CPU beats NPU on throughput (~7.4 vs ~5.2 tok/s) for this model.
 GPU text is fast but runs a smaller 3B model (not directly comparable).
@@ -418,8 +419,8 @@ verified yet — be honest about what's measured vs. assumed.
 > **Notable as of May 2026:** OpenVINO ships
 > [Qwen3-VL-8B](https://huggingface.co/OpenVINO/Qwen3-VL-8B-Instruct-int4-ov)
 > pre-exported in INT4/INT8/FP16. This is the natural vision sibling
-> to the proven Qwen3-8B NPU chat model and is now in `models.json`
-> as Untested — verify before promoting to Recommended.
+> to the proven Qwen3-8B NPU chat model and is the recommended VLM in
+> `models.json` after a 2026-05-26 QA pass on Xe-LPG iGPU.
 
 ### NPU models (chat)
 
@@ -435,7 +436,7 @@ verified yet — be honest about what's measured vs. assumed.
 
 | Model | Size | Notes |
 |---|---|---|
-| Qwen3-VL 8B (INT4) | ~6 GB | Untested. Newer Qwen-VL generation; expected upgrade. |
+| Qwen3-VL 8B (INT4) | ~6 GB | Recommended. Newer Qwen-VL generation; verified on Xe-LPG. |
 | Qwen2.5-VL 3B (INT8, convert) | ~4 GB | Recommended (proven). INT8 better at fine detail (OCR, numbers). |
 | Gemma 3 4B Vision (INT4) | ~3 GB | Untested. |
 | Gemma 3 12B Vision (INT4) | ~7 GB | Untested. Needs ~12 GB RAM with KV cache. |
@@ -516,9 +517,6 @@ local single-user tool.
 - **NPU prompt limit is 4096 tokens.** Long chat histories will
   eventually exceed this. The UI doesn't trim history — use Ctrl+N to
   start fresh if you hit the limit.
-- **VLM doesn't stream.** OpenVINO's VLMPipeline has no streaming API,
-  so vision responses arrive all at once. Waiting 3-5s for a VLM answer
-  is normal.
 - **Ollama management endpoints are stubs.** `/api/pull`, `/api/delete`,
   `/api/copy` return success but don't do anything. Model management is
   via `install.ps1` or `download-model.ps1`, not the API.

@@ -1,6 +1,52 @@
 # TODO
 
-## Test newer Whisper variants from OpenVINO HF (added 2026-05-21)
+## CPU as primary on NPU/GPU systems — settled non-goal (2026-05-26)
+
+`install.ps1` already offers CPU as the primary slot when no NPU
+and no GPU are detected (line ~450). On NPU- or GPU-equipped
+systems, NPU > GPU > CPU is the install-time default and stays so.
+
+### Context that briefly suggested otherwise
+
+`0bbb948` benchmarked Qwen3-8B (text LLM) on Arrow Lake desktop and
+found **CPU > iGPU > NPU** — decode is memory-bandwidth-bound, and
+DDR5 + many CPU cores beat the 4-core Xe-LPG iGPU and the NPU's
+power-sipping memory path. That made it tempting to expose CPU as
+a deliberate choice for desktop users.
+
+### Why we're not adding the install prompt
+
+The "CPU wins" rule turned out narrower than first thought:
+
+1. **VLM flips the result.** 2026-05-26 QA: same desktop, same
+   Qwen3-VL-8B-INT4 model, image-bearing prompts ran ~2.2x **slower**
+   on CPU than on Xe-LPG iGPU (15.29s vs 6.93s avg). VLM prefill is
+   compute-bound on the vision encoder; iGPU wins. Text-only on the
+   same model: CPU only ~10-30% slower than GPU.
+
+2. **NPU has its own memory path.** Intel AI Boost uses dedicated
+   DMA, separate from CPU/GPU memory controllers. Benchmark numbers
+   are best-case for CPU/GPU (idle system) and unchanged for NPU.
+   Under real load (browser open, build running, game rendering),
+   CPU and iGPU lose bandwidth they share; NPU keeps its own.
+   For "always-on assistant" / "while-I-work" workloads — which is
+   what most users actually have — NPU is undervalued by idle
+   benchmarks.
+
+3. **Adding a prompt adds friction for the 95%.** The "Keep it
+   simple" preference in CLAUDE.md argues against interactive
+   choices for niche power-user scenarios.
+
+4. **The runtime override already exists.** Anyone who's measured
+   and wants CPU can do `python nollama.py --device CPU --model-dir
+   .\model` — discoverable from `--help`.
+
+### Settled position
+
+NPU > GPU > CPU stays as the install default on Ultra hardware.
+CPU is only offered when no NPU and no GPU are present. The
+benchmark data and NPU memory-path nuance live here as context for
+any future "why not let users pick CPU?" question.
 
 Intel now ships pre-exported, pre-quantized Whisper models on
 [huggingface.co/OpenVINO](https://huggingface.co/OpenVINO). Our

@@ -6,7 +6,7 @@ OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
 
 - `nollama.py` — Flask server, DeviceSlot class per device, auto-detects VLM/LLM from config.json
 - NPU: LLMPipeline with MAX_PROMPT_LEN=4096, streaming via SSE
-- GPU: VLMPipeline (images) or LLMPipeline (text), no streaming for VLM (OpenVINO limitation)
+- GPU: VLMPipeline (images) or LLMPipeline (text). Both stream as of openvino-genai 2026.1 — verified on Arc 140V iGPU.
 - Whisper: WhisperSlot + WhisperPipeline for STT, `POST /v1/audio/transcriptions`, CPU or GPU
 - OpenVINO GenAI may unify VLM/LLMPipeline — when that happens, simplify the dual-pipeline routing
 - Routing: images go to GPU, text goes to NPU (or GPU if no NPU)
@@ -38,7 +38,7 @@ OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
 ## Known issues
 
 - NPU default prompt limit is 1024 tokens — we override to MAX_PROMPT_LEN=4096
-- VLMPipeline has no streaming support (OpenVINO limitation)
+- (resolved 2026-05-25) VLMPipeline gained streaming support in openvino-genai 2026.1; verified on Arc 140V iGPU at ~11 tok/s decode.
 - Qwen3 thinking models can exhaust token budget on `<think>` before producing an answer
 - Cancel (`/v1/cancel`) relies on OpenVINO invoking the streamer callback. If the native code blocks without yielding, cancel won't take effect — generation completes naturally.
 - Chat history unbounded in web UI — user clears with Ctrl+N when long sessions approach MAX_PROMPT_LEN
