@@ -18,7 +18,10 @@ OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
 
 ## Environment
 
-- Windows 11, Python 3.10+
+- Primary: Windows 11, Python 3.10+
+- Cross-platform: scripts use `#requires -Version 7.0` and branch on
+  `$IsWindows`. Linux + PowerShell 7 works (informally supported,
+  Linux NPU via `intel-npu-driver` is less mature than Windows).
 - Intel Core Ultra (NPU) + Intel ARC 140V 16GB (GPU)
 - OpenVINO 2026.1+ with openvino_genai
 - venv in `venv/`, activate before running

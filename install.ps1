@@ -18,6 +18,10 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ModelsRoot = Join-Path $HOME "models"
 Push-Location $ScriptDir
 
+# Cross-platform venv layout: Windows uses Scripts/<tool>.exe, POSIX uses bin/<tool>.
+$VenvBinDir = if ($IsWindows) { "Scripts" } else { "bin" }
+$ExeExt     = if ($IsWindows) { ".exe" }   else { "" }
+
 Write-Host ""
 Write-Host "=== NoLlama Install ===" -ForegroundColor Cyan
 Write-Host ""
@@ -33,7 +37,7 @@ $VenvDir = Join-Path $ScriptDir "venv"
 # folder is moved or renamed, every launcher fails with "Unable to create
 # process". Catch that here and recreate, rather than failing mid-install.
 if (Test-Path $VenvDir) {
-    $venvPip = Join-Path $VenvDir "Scripts\pip.exe"
+    $venvPip = Join-Path $VenvDir $VenvBinDir "pip$ExeExt"
     $venvOk = $false
     if (Test-Path $venvPip) {
         & $venvPip --version 2>&1 | Out-Null
@@ -54,7 +58,7 @@ if (-not (Test-Path $VenvDir)) {
     Write-Host "[OK] venv created"
 }
 
-$ActivateScript = Join-Path $VenvDir "Scripts\Activate.ps1"
+$ActivateScript = Join-Path $VenvDir $VenvBinDir "Activate.ps1"
 & $ActivateScript
 
 Write-Host "Installing dependencies..."
@@ -246,16 +250,24 @@ function Test-ModelCacheValid {
 }
 
 function New-ModelJunction {
+    # Windows: junction (works without admin/dev-mode).
+    # POSIX:   symlink.
     param([string]$TargetDir, [string]$CachePath)
     if (Test-Path $TargetDir) {
-        $item = Get-Item $TargetDir
-        if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
-            cmd /c rmdir "`"$TargetDir`""
+        $item = Get-Item $TargetDir -Force
+        if ($item.LinkType) {
+            # Remove the link without following it.
+            if ($IsWindows) { cmd /c rmdir "`"$TargetDir`"" | Out-Null }
+            else            { Remove-Item -Force $TargetDir }
         } else {
             Remove-Item -Recurse -Force $TargetDir
         }
     }
-    cmd /c mklink /J "`"$TargetDir`"" "`"$CachePath`"" | Out-Null
+    if ($IsWindows) {
+        cmd /c mklink /J "`"$TargetDir`"" "`"$CachePath`"" | Out-Null
+    } else {
+        New-Item -ItemType SymbolicLink -Path $TargetDir -Target $CachePath | Out-Null
+    }
 }
 
 function Install-Model {

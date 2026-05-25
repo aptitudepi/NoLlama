@@ -1,3 +1,4 @@
+#requires -Version 7.0
 # start.ps1 — NoLlama launcher
 # Starts the server, waits for models to load, then opens the browser.
 # Args are set by install.ps1 in the generated start.ps1
@@ -6,13 +7,19 @@ param(
     [string]$ServerArgs = ""
 )
 
+function Open-Url($url) {
+    # Best-effort cross-platform browser open; tolerate headless / no handler.
+    try { Start-Process $url } catch { Write-Host "  Open $url in your browser" -ForegroundColor DarkGray }
+}
+
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Port = 8000
 $Url = "http://localhost:$Port"
 
-# Activate venv
-& (Join-Path $ScriptDir "venv\Scripts\Activate.ps1")
+# Activate venv (Scripts on Windows, bin on POSIX)
+$VenvBinDir = if ($IsWindows) { "Scripts" } else { "bin" }
+& (Join-Path $ScriptDir "venv" $VenvBinDir "Activate.ps1")
 
 # Start server in background
 $AllArgs = @((Join-Path $ScriptDir "nollama.py"))
@@ -70,7 +77,7 @@ while ($Elapsed -lt $MaxWait) {
             Write-Host ""
             Write-Host "  Ready! Opening browser..." -ForegroundColor Green
             Write-Host ""
-            Start-Process $Url
+            Open-Url $Url
             break
         }
 
@@ -89,7 +96,7 @@ if ($Elapsed -ge $MaxWait) {
     Write-Host ""
     Write-Host "  WARNING: Server did not become ready within ${MaxWait}s" -ForegroundColor Yellow
     Write-Host "  Opening browser anyway..."
-    Start-Process $Url
+    Open-Url $Url
 }
 
 Write-Host "  Server running at $Url"

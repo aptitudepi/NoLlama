@@ -1,3 +1,4 @@
+#requires -Version 7.0
 # download-model.ps1 — Download or convert any HuggingFace model for NoLlama
 #
 # Usage:
@@ -24,8 +25,9 @@ param(
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-# Activate venv
-$VenvActivate = Join-Path $ScriptDir "venv\Scripts\Activate.ps1"
+# Activate venv (Scripts on Windows, bin on POSIX)
+$VenvBinDir = if ($IsWindows) { "Scripts" } else { "bin" }
+$VenvActivate = Join-Path $ScriptDir "venv" $VenvBinDir "Activate.ps1"
 if (Test-Path $VenvActivate) {
     & $VenvActivate
 } else {
@@ -57,9 +59,11 @@ if (Test-Path $Output) {
         Write-Host "Aborted."
         exit 0
     }
-    $item = Get-Item $Output
-    if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
-        cmd /c rmdir "`"$Output`""
+    $item = Get-Item $Output -Force
+    if ($item.LinkType) {
+        # Remove link without following.
+        if ($IsWindows) { cmd /c rmdir "`"$Output`"" | Out-Null }
+        else            { Remove-Item -Force $Output }
     } else {
         Remove-Item -Recurse -Force $Output
     }

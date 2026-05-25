@@ -486,7 +486,9 @@ The repo is pure code.
 
 ## Requirements
 
-- PowerShell 7+ (Windows PowerShell 5.1 is not supported)
+- PowerShell 7+ (Windows PowerShell 5.1 is not supported; on Linux,
+  see [Microsoft's install
+  instructions](https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-linux))
 - Python 3.10+
 - OpenVINO 2026.1+ with openvino-genai
 - At least one of:
@@ -496,6 +498,9 @@ The repo is pure code.
 - ~1-17 GB disk per model
 
 `install.ps1` handles the venv, dependencies, and model download.
+It runs on Windows, Linux, and (untested) macOS — paths and link
+creation are branched on `$IsWindows`. The Windows path is the
+primary tested platform; Linux is informally supported.
 
 ## Known limitations
 
