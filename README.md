@@ -58,10 +58,10 @@ Features:
 
 | Device | Examples | What it does | Streaming? |
 |---|---|---|---|
-| NPU (Intel AI Boost) | Core Ultra 7 258V | Text chat via LLMPipeline | Yes |
+| NPU (Intel AI Boost) | Core Ultra 7 258V | Text chat via LLMPipeline. Low power, sustained workload sweet spot. | Yes |
 | ARC iGPU | ARC 140V (Core Ultra) | Vision + text, or bigger LLM | VLM: no, LLM: yes |
 | ARC discrete | A770, B580 | Same as iGPU, more VRAM for larger models | VLM: no, LLM: yes |
-| CPU | Any Intel CPU | Fallback for everything | Yes (slowly) |
+| CPU | Any Intel CPU | Fallback for everything. On desktops with DDR5 and many cores, often *faster* than NPU — see benchmarks. | Yes |
 
 ### Intel only — by design
 
