@@ -63,7 +63,7 @@ while ($Elapsed -lt $MaxWait) {
     }
 
     try {
-        $resp = Invoke-RestMethod -Uri "$Url/health" -TimeoutSec 2 -ErrorAction Stop
+        $resp = Invoke-RestMethod -Uri "$Url/health" -TimeoutSec 10 -ErrorAction Stop
         $Status = $resp.status
 
         if ($Status -ne $LastStatus) {
