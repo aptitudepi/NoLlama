@@ -1399,6 +1399,16 @@ def main():
     model_dir = os.path.expanduser(args.model_dir)
     max_dim = args.max_dim
 
+    # Quiet Flask/Werkzeug startup noise: kills the "Serving Flask app" /
+    # "Debug mode: off" / "Running on http://..." / "Press CTRL+C to quit"
+    # block (printed twice — once per Flask app), the dev-server warning,
+    # and per-request access logs that would otherwise flood the console
+    # in normal use. nollama.py has its own app-level request logging.
+    import logging
+    import flask.cli
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
+    flask.cli.show_server_banner = lambda *a, **k: None
+
     print(flush=True)
 
     # 1. Check ports
