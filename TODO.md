@@ -58,6 +58,47 @@ existing `ollama_app` Flask blueprint.
 
 ---
 
+## Suppress OpenVINO native chatter on model load — low priority (2026-05-26)
+
+openvino_genai 2026.1 prints model-property dumps (`Model: OV
+Tokenizer / NETWORK_NAME / NUM_STREAMS / INFERENCE_NUM_THREADS / …`)
+plus `[INFO] pruning_ratio` and `[XAttention] DISABLED` lines from
+native C++ during pipeline construction and warmup. Roughly 25 lines
+per loaded model, only at startup; per-request inference is silent.
+
+### What didn't work
+
+- `OPENVINO_LOG_LEVEL=0` env var (the dump shows `LOG_LEVEL: LOG_NONE`
+  already — it's a deliberate print, not a log statement).
+- A `contextlib.contextmanager` that did `dup2(devnull, 1/2)` around
+  pipeline construction (`657f4bb`, reverted in `8824eca`). Works
+  single-threaded but races when both NPU and GPU loaders run
+  concurrently — both touch process-global fd 1/2 at the same time
+  and the "save original stdout" step can land *after* the other
+  thread already redirected. Models silently went to `status=error`
+  because their own error prints were lost.
+
+### Path forward
+
+Thread-safe version: global `threading.Lock` around the dup2
+sequence. Cost: NPU and GPU model loads serialize through the
+suppress block (~30s + 30s instead of ~30s parallel). Acceptable —
+loading already mostly serial inside OpenVINO's plugin machinery.
+
+Or: find an upstream-supported flag. Search openvino_genai 2026.1
+source for the property-dump call site; there may be a builder
+option, runtime property, or env var we missed.
+
+### Why low priority
+
+- Only visible at startup, not during use.
+- Doesn't affect correctness.
+- The interim "broken suppress" cost was much higher than the
+  chatter itself — better to accept the chatter than ship a fix
+  that breaks model loading.
+
+---
+
 ## CPU as primary on NPU/GPU systems — settled non-goal (2026-05-26)
 
 `install.ps1` already offers CPU as the primary slot when no NPU
