@@ -574,6 +574,7 @@ primary = None        # main model (NPU, GPU, or CPU)
 secondary = None      # optional second model (GPU, for vision or bigger LLM)
 whisper_slot = None   # optional Whisper STT model
 max_dim = 768
+debug = False
 _request_counter = itertools.count(1)  # thread-safe id generator
 
 
@@ -633,6 +634,31 @@ def _route_request(has_images, requested_model):
 
     # Single mode — everything goes to primary
     return primary if _slot_serviceable(primary) else None
+
+
+# ---------------------------------------------------------------------------
+# Debug logging
+# ---------------------------------------------------------------------------
+
+def _log_request(api_label):
+    if not debug:
+        return
+    body_raw = request.get_data(as_text=True)
+    try:
+        body_str = json.dumps(json.loads(body_raw), indent=2) if body_raw else ""
+    except Exception:
+        body_str = body_raw
+    ua = request.headers.get("User-Agent", "")
+    print(f"{datetime.now():%H:%M:%S} [DEBUG/{api_label}] {request.method} {request.path}"
+          f"  UA={ua!r}", flush=True)
+    if body_str:
+        for line in body_str.splitlines():
+            print(f"  {line}", flush=True)
+
+
+@app.before_request
+def _debug_openai():
+    _log_request("OpenAI")
 
 
 # ---------------------------------------------------------------------------
@@ -872,6 +898,11 @@ ollama_app = Flask("NoLlama-Ollama")
 ollama_app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
 
 OLLAMA_PORT = 11434
+
+
+@ollama_app.before_request
+def _debug_ollama():
+    _log_request("Ollama")
 
 
 @ollama_app.route("/")
@@ -1394,15 +1425,18 @@ def parse_args():
     p.add_argument("--idle-timeout", type=int, default=1800,
                    help="Change idle-unload timeout in seconds "
                         "(default: 1800 = 30 min). Use 0 to disable unloading.")
+    p.add_argument("--debug", action="store_true",
+                   help="Log every inbound API request (method, path, User-Agent, body)")
     return p.parse_args()
 
 
 def main():
-    global primary, secondary, whisper_slot, max_dim
+    global primary, secondary, whisper_slot, max_dim, debug
 
     args = parse_args()
     model_dir = os.path.expanduser(args.model_dir)
     max_dim = args.max_dim
+    debug = args.debug
 
     # Quiet Flask/Werkzeug startup noise: kills the "Serving Flask app" /
     # "Debug mode: off" / "Running on http://..." / "Press CTRL+C to quit"
