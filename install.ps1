@@ -2,21 +2,39 @@
 # install.ps1 — NoLlama setup: venv, dependencies, model selection
 #
 # Usage:
-#     .\install.ps1              # interactive setup
-#     .\install.ps1 -SkipModel   # venv + deps only
+#     .\install.ps1                       # interactive setup
+#     .\install.ps1 -SkipModel            # venv + deps only
+#     .\install.ps1 -HfToken hf_xxx       # auth for gated/private models
 #
 # Detects available devices (NPU, GPU, CPU), then walks the user
 # through model selection. NPU-first: if you have an NPU, that's
 # your primary chat device.
+#
+# -HfToken: a HuggingFace access token (https://huggingface.co/settings/tokens).
+# Only needed for gated or private models — the curated OpenVINO models are
+# public and download anonymously. We can't rely on 'hf auth login' here
+# because this script is what installs 'hf' in the first place, so the token
+# is passed through the HF_TOKEN env var that huggingface_hub reads at
+# download time.
 
 param(
-    [switch]$SkipModel
+    [switch]$SkipModel,
+    [string]$HfToken
 )
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ModelsRoot = Join-Path $HOME "models"
 Push-Location $ScriptDir
+
+# Make a passed HF token available to every 'hf download' below. huggingface_hub
+# reads HF_TOKEN from the environment automatically, so the download calls need
+# no change. Only set when -HfToken was given; otherwise any token already
+# stored via 'hf auth login' is used as before.
+if ($HfToken) {
+    $env:HF_TOKEN = $HfToken
+    Write-Host "[+] HF token set for this session (gated/private model auth)" -ForegroundColor DarkGray
+}
 
 # Cross-platform venv layout: Windows uses Scripts/<tool>.exe, POSIX uses bin/<tool>.
 $VenvBinDir = if ($IsWindows) { "Scripts" } else { "bin" }
@@ -373,7 +391,8 @@ function Install-Model {
             hf download $Selected.HfId --local-dir $cachePath
             if (-not $?) {
                 Write-Host "ERROR: Download failed." -ForegroundColor Red
-                Write-Host "  If 401/403: run 'huggingface-cli login' first" -ForegroundColor Yellow
+                Write-Host "  If 401/403 (gated/private model): re-run with a token --" -ForegroundColor Yellow
+                Write-Host "    .\install.ps1 -HfToken hf_xxx   (get one at https://huggingface.co/settings/tokens)" -ForegroundColor Yellow
                 return $false
             }
         }

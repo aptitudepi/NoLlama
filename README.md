@@ -381,6 +381,25 @@ hardware. All pre-exported models are download-only (no conversion).
 The menu is defined in `models.json` — add entries when new models
 are verified.
 
+### Gated or private models (HuggingFace token)
+
+The curated `OpenVINO/…` models are public and download anonymously — no
+token needed. You only need a [HuggingFace
+token](https://huggingface.co/settings/tokens) (the `hf_…` string) for
+**gated** models (ones that make you accept a license, e.g. Llama) or
+**private** repos. Pass it with `-HfToken`:
+
+```powershell
+.\install.ps1 -HfToken hf_xxxxxxxxxxxxxxxxxxxxx
+```
+
+Note: `hf auth login` won't help on a first run — `install.ps1` is what
+installs the `hf` CLI in the first place, so there's no `hf` to log in
+with yet. `-HfToken` works on a clean machine because it sets `HF_TOKEN`
+before the download (which `huggingface_hub` reads automatically). If you
+already have an `hf auth login` token stored from elsewhere, that's used
+too — `-HfToken` is just the bootstrap-proof way.
+
 ### Adding models outside the menu
 
 Use `download-model.ps1` to grab any HuggingFace model:
