@@ -483,11 +483,13 @@ Once a model proves itself, add it to `models.json` so it appears in
 the install menu. Keep "Untested" tags on entries that haven't been
 verified yet — be honest about what's measured vs. assumed.
 
-> **Notable as of May 2026:** OpenVINO ships
-> [Qwen3-VL-8B](https://huggingface.co/OpenVINO/Qwen3-VL-8B-Instruct-int4-ov)
-> pre-exported in INT4/INT8/FP16. This is the natural vision sibling
-> to the proven Qwen3-8B NPU chat model and is the recommended VLM in
-> `models.json` after a 2026-05-26 QA pass on Xe-LPG iGPU.
+> **Recommended VLM:** OpenVINO ships
+> [Qwen3-VL-8B](https://huggingface.co/OpenVINO/Qwen3-VL-8B-Instruct-int8-ov)
+> pre-exported in INT4/INT8/FP16 — the natural vision sibling to the
+> proven Qwen3-8B NPU chat model. The INT8 build is verified here on the
+> Arc 140V in dual mode (2026-06-16) and is the default GPU vision pick
+> (see [Recommended models](#recommended-models)); INT4 is the lighter
+> ~6 GB option.
 
 ### NPU models (chat)
 
