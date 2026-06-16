@@ -137,6 +137,37 @@ CPU beats NPU on throughput (~7.4 vs ~5.2 tok/s) for this model.
 GPU text is fast but runs a smaller 3B model (not directly comparable).
 VLM image responses take ~3-4s regardless of answer length.
 
+### NoLlama vs Ollama on the Arc 140V iGPU
+
+Ollama now runs on Intel iGPUs via its Vulkan backend, so this is the
+direct apples-to-apples question: **same Qwen3-8B, same 4-bit, same
+Arc 140V iGPU.** Measured 2026-06-16 with `benchmark.py` (3 runs), using
+the `count 1-100` test as the steady-state decode metric.
+
+| | NoLlama (OpenVINO INT4-CW) | Ollama 0.30.8 (Vulkan GGUF Q4) |
+|---|---|---|
+| **Decode tok/s** (count 1-100) | **21.7** | 13.4 |
+| Decode tok/s (2+2, thinking) | 18.6 | 11.2 |
+| TTFT (prefill) | 3.2s | **1.85s** |
+
+**NoLlama's OpenVINO GPU path is ~1.6× faster on decode**; Ollama wins
+time-to-first-token. Two caveats that matter in practice:
+
+- **Ollama drops the iGPU by default** — it needs `OLLAMA_IGPU_ENABLE=1`,
+  or it silently runs on CPU. The out-of-the-box Ollama experience on
+  this laptop is *CPU*, not GPU.
+- Ollama can't use the **NPU** at all, and has no local **vision** model
+  on Intel — both are NoLlama-only.
+
+> **Roadmap note — GPU/CPU support is provisional.** NoLlama's reason to
+> exist is the Intel **NPU** (which Ollama doesn't support). The GPU/CPU
+> paths are kept only while OpenVINO is meaningfully faster than Ollama
+> there. **As/when Ollama's Intel GPU (and CPU) performance catches up to
+> OpenVINO, GPU/CPU support will be removed from NoLlama** and it will
+> become NPU-only — at that point Ollama is the better tool for GPU/CPU
+> and there's no reason to duplicate it. Today (Ollama ~1.6× slower on
+> GPU decode, CPU-by-default), that bar isn't met, so GPU/CPU stay.
+
 ### Benchmark (Core Ultra 9 285K, RTX 5090) — desktop, DDR5
 
 Same Qwen3 8B INT4-CW model on every Intel device, plus the same model
