@@ -537,10 +537,16 @@ The repo is pure code.
 
 `install.ps1` handles the venv, dependencies, and model download.
 **There is no `install.sh`** — `install.ps1` *is* the cross-platform
-installer. On Linux/macOS run it with PowerShell 7 (`pwsh ./install.ps1`,
-including flags like `-HfToken`); paths and link creation branch on
-`$IsWindows`. The Windows path is the primary tested platform; Linux is
-informally supported.
+installer, and **Linux users must use it too** (there is no Bash
+alternative). On Linux/macOS run it with PowerShell 7
+(`pwsh ./install.ps1`, including flags like `-HfToken`); paths and link
+creation branch on `$IsWindows`. Windows is the primary platform, but
+**Linux is confirmed working** by user reports (Core Ultra 7 258V, NPU +
+GPU detected — see [#6](https://github.com/aweussom/NoLlama/issues/6));
+macOS is untested. On Linux, NPU and GPU detection needs the Intel
+userspace drivers installed (`intel-npu-driver` for the NPU, the GPU
+compute runtime for the iGPU) — without them only the CPU shows up. The
+NPU Linux stack is less battle-tested than Windows.
 
 ## Known limitations
 
