@@ -20,10 +20,12 @@ import io
 import itertools
 import json
 import os
+import re
 import socket
 import sys
 import time
 import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
 from queue import Queue, Empty
@@ -169,6 +171,209 @@ def extract_text(result):
                 return val[0].strip() if val else ""
             return val.strip()
     return str(result).strip()
+
+
+# ---------------------------------------------------------------------------
+# Tool calling (function calling) — Qwen3-Coder native format
+#
+# VS Code Copilot Chat sends tool definitions in the request `tools` array and
+# expects structured `tool_calls` back. OpenVINO GenAI applies the model's chat
+# template but gives us no hook to pass `tools` through it, so we render the
+# specs into a system prompt ourselves (the way Qwen3-Coder was trained) and
+# parse the model's emitted calls back into OpenAI shape.
+#
+# Qwen3-Coder emits calls as:
+#   <tool_call>
+#   <function=NAME>
+#   <parameter=KEY>
+#   VALUE
+#   </parameter>
+#   </function>
+#   </tool_call>
+# ---------------------------------------------------------------------------
+
+_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
+_FUNCTION_RE = re.compile(r"<function=([^>\s]+)\s*>(.*?)</function>", re.DOTALL)
+_PARAM_RE = re.compile(r"<parameter=([^>\s]+)\s*>(.*?)</parameter>", re.DOTALL)
+
+
+def _tool_param_types(tools):
+    """Map {tool_name: {param_name: json_schema_type}} for value coercion."""
+    types = {}
+    for t in tools or []:
+        fn = t.get("function", t) if isinstance(t, dict) else {}
+        name = fn.get("name")
+        if not name:
+            continue
+        props = (fn.get("parameters") or {}).get("properties") or {}
+        types[name] = {k: (v or {}).get("type", "string") for k, v in props.items()}
+    return types
+
+
+def _coerce_value(raw, json_type):
+    """Best-effort coerce an XML <parameter> string to its schema type."""
+    raw = raw.strip()
+    try:
+        if json_type in ("number", "integer", "object", "array"):
+            return json.loads(raw)
+        if json_type == "boolean":
+            return raw.strip().lower() == "true"
+    except (ValueError, TypeError):
+        pass
+    return raw
+
+
+def render_tools_prompt(tools):
+    """Build a system-prompt block describing tools in Qwen3-Coder format."""
+    specs = []
+    for t in tools or []:
+        fn = t.get("function", t) if isinstance(t, dict) else {}
+        if fn.get("name"):
+            specs.append(json.dumps(fn, ensure_ascii=False))
+    if not specs:
+        return ""
+    return (
+        "You have access to the following tools. When you need to call one, "
+        "emit it exactly in this format (one <tool_call> block per call, and "
+        "nothing else in that turn):\n"
+        "<tool_call>\n<function=TOOL_NAME>\n<parameter=ARG_NAME>\nARG_VALUE\n"
+        "</parameter>\n</function>\n</tool_call>\n\n"
+        "Available tools (JSON schema):\n<tools>\n"
+        + "\n".join(specs)
+        + "\n</tools>"
+    )
+
+
+def _tool_calls_to_text(tool_calls):
+    """Render assistant tool_calls (from history) back into Qwen3-Coder XML."""
+    blocks = []
+    for tc in tool_calls:
+        fn = tc.get("function", {})
+        name = fn.get("name", "")
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except (ValueError, TypeError):
+            args = {}
+        params = "".join(
+            f"<parameter={k}>\n{v if isinstance(v, str) else json.dumps(v)}\n</parameter>\n"
+            for k, v in args.items()
+        )
+        blocks.append(f"<tool_call>\n<function={name}>\n{params}</function>\n</tool_call>")
+    return "\n".join(blocks)
+
+
+def prepare_messages_for_tools(messages, tools):
+    """Normalize OpenAI messages for a tool-enabled turn.
+
+    - Injects/extends a system message describing the tools.
+    - Renders prior assistant tool_calls back into the model's XML so the
+      conversation stays coherent across turns.
+    - Folds `tool` result messages into tagged user content (works regardless
+      of whether the chat template knows the `tool` role).
+    """
+    tool_prompt = render_tools_prompt(tools)
+    out = []
+    injected = False
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content")
+
+        if role == "system":
+            sys_text = content if isinstance(content, str) else (content or "")
+            if tool_prompt and not injected:
+                sys_text = (sys_text + "\n\n" + tool_prompt).strip()
+                injected = True
+            out.append({"role": "system", "content": sys_text})
+            continue
+
+        if role == "assistant" and msg.get("tool_calls"):
+            rendered = _tool_calls_to_text(msg["tool_calls"])
+            base = content if isinstance(content, str) and content else ""
+            out.append({"role": "assistant", "content": (base + "\n" + rendered).strip()})
+            continue
+
+        if role == "tool":
+            name = msg.get("name", "")
+            result = content if isinstance(content, str) else json.dumps(content)
+            tag = f' name="{name}"' if name else ""
+            out.append({"role": "user",
+                        "content": f"<tool_response{tag}>\n{result}\n</tool_response>"})
+            continue
+
+        # plain user/assistant (content may be None on a tool-call-only turn)
+        out.append({"role": role, "content": content if content is not None else ""})
+
+    if tool_prompt and not injected:
+        out.insert(0, {"role": "system", "content": tool_prompt})
+    return out
+
+
+def parse_tool_calls(text, tools):
+    """Extract tool calls from generated text.
+
+    Returns (content_text, tool_calls) where tool_calls is a list of OpenAI
+    tool_call dicts (empty if none found). Handles Qwen3-Coder XML, the
+    Hermes-style JSON-in-<tool_call>, and a bare top-level JSON fallback.
+    """
+    param_types = _tool_param_types(tools)
+    known = set(param_types)
+    tool_calls = []
+
+    def add(name, args):
+        tool_calls.append({
+            "id": "call_" + uuid.uuid4().hex[:24],
+            "type": "function",
+            "function": {"name": name,
+                         "arguments": json.dumps(args, ensure_ascii=False)},
+        })
+
+    blocks = _TOOL_CALL_RE.findall(text)
+    if blocks:
+        content = _TOOL_CALL_RE.sub("", text).strip()
+        for block in blocks:
+            block = block.strip()
+            m = _FUNCTION_RE.search(block)
+            if m:
+                name = m.group(1).strip()
+                args = {}
+                for k, v in _PARAM_RE.findall(m.group(2)):
+                    k = k.strip()
+                    args[k] = _coerce_value(v, param_types.get(name, {}).get(k, "string"))
+                add(name, args)
+            else:
+                # JSON inside <tool_call> (Hermes / Qwen2.5 style)
+                try:
+                    obj = json.loads(block)
+                    name = obj.get("name") or obj.get("function", {}).get("name")
+                    args = obj.get("arguments") or obj.get("parameters") or {}
+                    if isinstance(args, str):
+                        args = json.loads(args)
+                    if name:
+                        add(name, args)
+                except (ValueError, TypeError, AttributeError):
+                    pass
+        return content, tool_calls
+
+    # Fallback: a bare top-level JSON object naming a known tool — the failure
+    # mode seen when the model isn't told the proper format.
+    stripped = text.strip()
+    if known and stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            obj = json.loads(stripped)
+        except (ValueError, TypeError):
+            obj = None
+        if isinstance(obj, dict):
+            name = obj.get("name") or obj.get("function") or obj.get("type")
+            if name in known:
+                args = obj.get("arguments") or obj.get("parameters")
+                if not isinstance(args, dict):
+                    args = {k: v for k, v in obj.items()
+                            if k not in ("name", "function", "type",
+                                         "arguments", "parameters")}
+                add(name, args)
+                return "", tool_calls
+
+    return text, tool_calls
 
 
 # ---------------------------------------------------------------------------
@@ -604,6 +809,31 @@ def openai_error(message, error_type="invalid_request_error", status=400):
     return jsonify({"error": {"message": message, "type": error_type}}), status
 
 
+def _sse_replay(completion_id, created, model, message, finish_reason):
+    """Emit a buffered chat result as an OpenAI streaming SSE sequence.
+
+    Used for tool-enabled turns, where we must buffer the full generation
+    before we can hand back a structured tool_calls delta.
+    """
+    def chunk(delta, finish=None):
+        return "data: " + json.dumps({
+            "id": completion_id, "object": "chat.completion.chunk",
+            "created": created, "model": model,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+        }) + "\n\n"
+
+    yield chunk({"role": "assistant"})
+    if message.get("content"):
+        yield chunk({"content": message["content"]})
+    for i, tc in enumerate(message.get("tool_calls") or []):
+        yield chunk({"tool_calls": [{
+            "index": i, "id": tc["id"], "type": "function",
+            "function": tc["function"],
+        }]})
+    yield chunk({}, finish_reason)
+    yield "data: [DONE]\n\n"
+
+
 def _slot_serviceable(slot):
     """A slot can serve requests if loaded or just idle-unloaded (will reload)."""
     return slot and slot.status in ("ready", "idle_unloaded")
@@ -780,6 +1010,12 @@ def chat_completions():
     top_p = body.get("top_p", 1.0)
     stream = body.get("stream", False)
     requested_model = body.get("model", "")
+    tools = body.get("tools") or []
+
+    # Tool-enabled turn: render tool specs into the prompt and normalize any
+    # prior tool_calls / tool results so the model sees a coherent history.
+    if tools:
+        messages = prepare_messages_for_tools(messages, tools)
 
     # Parse messages
     try:
@@ -864,7 +1100,9 @@ def chat_completions():
         return resp
 
     # --- LLM path ---
-    if stream:
+    # Tool-enabled turns are buffered (not token-streamed): we can only emit a
+    # structured tool_calls delta once the whole <tool_call> block is in hand.
+    if stream and not tools:
         return Response(
             slot.stream_llm(raw_messages, gen, completion_id, created, t0),
             mimetype="text/event-stream",
@@ -880,13 +1118,37 @@ def chat_completions():
     elapsed = time.perf_counter() - t0
     n_words = len(text.split())
     print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] "
-          f"~{n_words} tokens in {elapsed:.1f}s ({n_words / elapsed:.1f} tok/s)",
+          f"~{n_words} tokens in {elapsed:.1f}s ({n_words / max(elapsed, 1e-6):.1f} tok/s)",
           flush=True)
+
+    tool_calls = []
+    if tools:
+        text, tool_calls = parse_tool_calls(text, tools)
+        if tool_calls:
+            print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] "
+                  f"{len(tool_calls)} tool call(s): "
+                  f"{', '.join(tc['function']['name'] for tc in tool_calls)}",
+                  flush=True)
+
+    if tool_calls:
+        message = {"role": "assistant", "content": text or None, "tool_calls": tool_calls}
+        finish_reason = "tool_calls"
+    else:
+        message = {"role": "assistant", "content": text}
+        finish_reason = "stop"
+
+    if stream:
+        # tools + stream: replay the buffered result as a short SSE sequence.
+        return Response(
+            _sse_replay(completion_id, created, slot.model_name, message, finish_reason),
+            mimetype="text/event-stream",
+            headers={"X-Device": slot.device_name, "X-Model": slot.model_name},
+        )
 
     resp = jsonify({
         "id": completion_id, "object": "chat.completion",
         "created": created, "model": slot.model_name,
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+        "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
         "usage": {"prompt_tokens": -1, "completion_tokens": -1, "total_tokens": -1},
     })
     resp.headers["X-Device"] = slot.device_name
@@ -980,26 +1242,32 @@ def ollama_chat():
 
     max_tokens = body.get("options", {}).get("num_predict", 2048)
     temperature = body.get("options", {}).get("temperature", 0.0)
+    tools = body.get("tools") or []
 
     # Translate Ollama messages to internal format
     has_images = False
-    internal_messages = []
-    for msg in ollama_messages:
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
-        msg_images = msg.get("images", [])
+    if tools:
+        # Tool turns are text-only here: render tool specs + prior calls into
+        # the prompt. (Images + tools simultaneously is not a supported path.)
+        internal_messages = prepare_messages_for_tools(ollama_messages, tools)
+    else:
+        internal_messages = []
+        for msg in ollama_messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            msg_images = msg.get("images", [])
 
-        if msg_images:
-            has_images = True
-            blocks = [{"type": "text", "text": content}]
-            for img_b64 in msg_images:
-                blocks.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
-                })
-            internal_messages.append({"role": role, "content": blocks})
-        else:
-            internal_messages.append({"role": role, "content": content})
+            if msg_images:
+                has_images = True
+                blocks = [{"type": "text", "text": content}]
+                for img_b64 in msg_images:
+                    blocks.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
+                    })
+                internal_messages.append({"role": role, "content": blocks})
+            else:
+                internal_messages.append({"role": role, "content": content})
 
     # Parse through same pipeline as OpenAI
     try:
@@ -1055,14 +1323,13 @@ def ollama_chat():
             "total_duration": int(elapsed * 1e9),
         })
 
-    # LLM path
-    if stream:
+    # LLM path. Tool turns are buffered (see chat_completions for why).
+    if stream and not tools:
         return Response(
             _ollama_stream_chat(slot, raw_messages, gen, t0),
             mimetype="application/x-ndjson",
         )
 
-    # Non-streaming LLM
     try:
         text = slot.generate_llm(raw_messages, gen)
     except Exception as e:
@@ -1072,12 +1339,33 @@ def ollama_chat():
     print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] [Ollama] "
           f"~{len(text.split())} tokens in {elapsed:.1f}s", flush=True)
 
-    return jsonify({
+    message = {"role": "assistant", "content": text}
+    if tools:
+        text, tool_calls = parse_tool_calls(text, tools)
+        message["content"] = text
+        if tool_calls:
+            # Ollama shape: arguments are an object, not a JSON string.
+            message["tool_calls"] = [{
+                "function": {
+                    "name": tc["function"]["name"],
+                    "arguments": json.loads(tc["function"]["arguments"]),
+                }
+            } for tc in tool_calls]
+            print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] [Ollama] "
+                  f"{len(tool_calls)} tool call(s): "
+                  f"{', '.join(tc['function']['name'] for tc in tool_calls)}",
+                  flush=True)
+
+    final = {
         "model": slot.model_name,
-        "message": {"role": "assistant", "content": text},
+        "message": message,
         "done": True,
         "total_duration": int(elapsed * 1e9),
-    })
+    }
+    if stream:
+        # tools + stream: emit the buffered result as a single ndjson line.
+        return Response(json.dumps(final) + "\n", mimetype="application/x-ndjson")
+    return jsonify(final)
 
 
 def _ollama_stream_chat(slot, raw_messages, gen, t0):

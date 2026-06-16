@@ -15,6 +15,10 @@ OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
 - `threaded=True` on Flask, concurrency via per-device locks
 - `models.json` — curated model registry (npu, gpu_vlm, gpu_llm, whisper categories)
 - `install.ps1` detects devices, shows model menu, generates `start.ps1`
+- Tool calling: tool specs from the request `tools` array are rendered into a system
+  prompt (Qwen3-Coder native format); the model's `<tool_call>` XML is parsed back into
+  OpenAI/Ollama `tool_calls`. See `render_tools_prompt` / `parse_tool_calls`. Copilot Chat
+  0.53+ hits `/v1/chat/completions` (delegates to `chat_completions`); `/api/chat` also handled.
 
 ## Environment
 
@@ -42,6 +46,11 @@ OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
 - Qwen3 thinking models can exhaust token budget on `<think>` before producing an answer
 - Cancel (`/v1/cancel`) relies on OpenVINO invoking the streamer callback. If the native code blocks without yielding, cancel won't take effect — generation completes naturally.
 - Chat history unbounded in web UI — user clears with Ctrl+N when long sessions approach MAX_PROMPT_LEN
+- Tool-enabled turns are buffered, not token-streamed: we must see the whole `<tool_call>`
+  block before emitting a structured `tool_calls` delta, so when `tools` is present the full
+  generation is collected before any SSE/ndjson is sent (no incremental tokens that turn). In
+  Copilot agent mode every request carries tools, so all answers are buffered. A trailing-buffer
+  streamer (stream until a `<tool_call>` prefix appears) would restore streaming — not yet done.
 
 ## Verified models
 
