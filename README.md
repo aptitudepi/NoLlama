@@ -536,9 +536,11 @@ The repo is pure code.
 - ~1-17 GB disk per model
 
 `install.ps1` handles the venv, dependencies, and model download.
-It runs on Windows, Linux, and (untested) macOS — paths and link
-creation are branched on `$IsWindows`. The Windows path is the
-primary tested platform; Linux is informally supported.
+**There is no `install.sh`** — `install.ps1` *is* the cross-platform
+installer. On Linux/macOS run it with PowerShell 7 (`pwsh ./install.ps1`,
+including flags like `-HfToken`); paths and link creation branch on
+`$IsWindows`. The Windows path is the primary tested platform; Linux is
+informally supported.
 
 ## Known limitations
 
