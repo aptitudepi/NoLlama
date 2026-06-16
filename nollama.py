@@ -575,6 +575,10 @@ secondary = None      # optional second model (GPU, for vision or bigger LLM)
 whisper_slot = None   # optional Whisper STT model
 max_dim = 768
 debug = False
+vscode_compat = False  # report a real Ollama version so VS Code accepts us
+
+# Ollama version VS Code expects; fake but recent enough to pass its checks.
+VSCODE_OLLAMA_VERSION = "0.18.3"
 _request_counter = itertools.count(1)  # thread-safe id generator
 
 
@@ -912,7 +916,10 @@ def ollama_health():
 
 @ollama_app.route("/api/version", methods=["GET"])
 def ollama_version():
-    return jsonify({"version": "nollama-0.1.0"})
+    # VS Code's Ollama client rejects non-numeric versions, so when
+    # --vscode-compat is set we report a real Ollama version to please it.
+    version = VSCODE_OLLAMA_VERSION if vscode_compat else "nollama-0.1.0"
+    return jsonify({"version": version})
 
 
 @ollama_app.route("/api/tags", methods=["GET"])
@@ -937,6 +944,14 @@ def ollama_tags():
 def ollama_show():
     body = request.get_json(silent=True) or {}
     model_name = body.get("model", "")
+
+    model_info = {}
+    # Copilot Chat uses `general.basename` to label models in the picker, but
+    # it prefers the name returned by /api/tags. Echo back what we returned there
+    # so the picker shows the same name the user sees in /api/tags.
+    if request.headers.get("User-Agent", "").startswith("GitHubCopilotChat/"):
+        model_info["general.basename"] = model_name
+
     for slot in (primary, secondary):
         if slot and slot.model_name == model_name:
             return jsonify({
@@ -946,9 +961,11 @@ def ollama_show():
                     "parameter_size": "",
                     "quantization_level": "int4",
                 },
-                "model_info": {},
+                "model_info": model_info,
+                "capabilities": ["completion", "tools"],
             })
-    return jsonify({"model": model_name, "details": {}, "model_info": {}})
+    return jsonify({"model": model_name, "details": {}, "model_info": model_info,
+                    "capabilities": ["completion", "tools"]})
 
 
 @ollama_app.route("/api/chat", methods=["POST"])
@@ -1287,6 +1304,13 @@ def ollama_copy():
     return "", 200
 
 
+# Copilot Chat 0.53+ sends actual chat via /v1/chat/completions on the Ollama
+# port rather than /api/chat — delegate to the same handler.
+@ollama_app.route("/v1/chat/completions", methods=["POST"])
+def ollama_v1_chat_completions():
+    return chat_completions()
+
+
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
@@ -1427,16 +1451,20 @@ def parse_args():
                         "(default: 1800 = 30 min). Use 0 to disable unloading.")
     p.add_argument("--debug", action="store_true",
                    help="Log every inbound API request (method, path, User-Agent, body)")
+    p.add_argument("--vscode-compat", action="store_true",
+                   help=f"Report a real Ollama version ({VSCODE_OLLAMA_VERSION}) on "
+                        f"/api/version so VS Code's Ollama client accepts the server")
     return p.parse_args()
 
 
 def main():
-    global primary, secondary, whisper_slot, max_dim, debug
+    global primary, secondary, whisper_slot, max_dim, debug, vscode_compat
 
     args = parse_args()
     model_dir = os.path.expanduser(args.model_dir)
     max_dim = args.max_dim
     debug = args.debug
+    vscode_compat = args.vscode_compat
 
     # Quiet Flask/Werkzeug startup noise: kills the "Serving Flask app" /
     # "Debug mode: off" / "Running on http://..." / "Press CTRL+C to quit"
