@@ -20,10 +20,12 @@ import io
 import itertools
 import json
 import os
+import re
 import socket
 import sys
 import time
 import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
 from queue import Queue, Empty
@@ -180,6 +182,350 @@ def extract_text(result):
                 return val[0].strip() if val else ""
             return val.strip()
     return str(result).strip()
+
+
+# ---------------------------------------------------------------------------
+# Tool calling (function calling) — Qwen3-Coder native format
+#
+# VS Code Copilot Chat sends tool definitions in the request `tools` array and
+# expects structured `tool_calls` back. OpenVINO GenAI applies the model's chat
+# template but gives us no hook to pass `tools` through it, so we render the
+# specs into a system prompt ourselves (the way Qwen3-Coder was trained) and
+# parse the model's emitted calls back into OpenAI shape.
+#
+# Qwen3-Coder emits calls as:
+#   <tool_call>
+#   <function=NAME>
+#   <parameter=KEY>
+#   VALUE
+#   </parameter>
+#   </function>
+#   </tool_call>
+# ---------------------------------------------------------------------------
+
+_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
+_FUNCTION_RE = re.compile(r"<function=([^>\s]+)\s*>(.*?)</function>", re.DOTALL)
+_PARAM_RE = re.compile(r"<parameter=([^>\s]+)\s*>(.*?)</parameter>", re.DOTALL)
+
+# Other model families emit their own native tool-call syntax. A small model
+# often ignores our Qwen3-Coder system prompt and falls back to whatever it was
+# trained on, so we recognize those too:
+#   Mistral   : [TOOL_CALLS][{"name": ..., "arguments": {...}}, ...]
+#   Llama 3.x : <|python_tag|>{"name": ..., "parameters": {...}}  (';'-separated)
+#   DeepSeek  : <｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>NAME
+#               ```json\n{...}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>
+_MISTRAL_RE = re.compile(r"\[TOOL_CALLS\]")
+_PYTHON_TAG_RE = re.compile(r"<\|python_tag\|>")
+_DS_BEGIN = "<｜tool▁calls▁begin｜>"
+_DS_CALL_RE = re.compile(
+    r"<｜tool▁call▁begin｜>\s*\w+\s*<｜tool▁sep｜>\s*([^\n`]+?)\s*"
+    r"```(?:json)?\s*(\{.*?\})\s*```",
+    re.DOTALL,
+)
+
+
+def _tool_param_types(tools):
+    """Map {tool_name: {param_name: json_schema_type}} for value coercion."""
+    types = {}
+    for t in tools or []:
+        fn = t.get("function", t) if isinstance(t, dict) else {}
+        name = fn.get("name")
+        if not name:
+            continue
+        props = (fn.get("parameters") or {}).get("properties") or {}
+        types[name] = {k: (v or {}).get("type", "string") for k, v in props.items()}
+    return types
+
+
+def _coerce_value(raw, json_type):
+    """Best-effort coerce an XML <parameter> string to its schema type."""
+    raw = raw.strip()
+    try:
+        if json_type in ("number", "integer", "object", "array"):
+            return json.loads(raw)
+        if json_type == "boolean":
+            return raw.strip().lower() == "true"
+    except (ValueError, TypeError):
+        pass
+    return raw
+
+
+def _extract_name_args(obj):
+    """Pull (name, args dict) from a tool-call dict across naming conventions.
+
+    Handles name vs function.name vs function (string), and arguments vs
+    parameters vs function.arguments, with args possibly JSON-encoded as a
+    string. Returns (None, {}) if obj isn't a usable call.
+    """
+    if not isinstance(obj, dict):
+        return None, {}
+    fn = obj.get("function") if isinstance(obj.get("function"), dict) else None
+    name = obj.get("name") or (fn or {}).get("name")
+    if isinstance(obj.get("function"), str):
+        name = obj["function"]
+    args = obj.get("arguments")
+    if args is None and fn:
+        args = fn.get("arguments")
+    if args is None:
+        args = obj.get("parameters")
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except (ValueError, TypeError):
+            args = {}
+    if not isinstance(args, dict):
+        args = {}
+    return name, args
+
+
+def _iter_json_objects(s):
+    """Yield top-level {...} substrings from s, respecting string escaping.
+
+    Lets us pull several JSON objects out of one blob (e.g. Llama's
+    ';'-separated parallel calls) without a brittle balanced-brace regex.
+    """
+    depth = 0
+    start = None
+    in_str = False
+    esc = False
+    for i, ch in enumerate(s):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}" and depth > 0:
+            depth -= 1
+            if depth == 0 and start is not None:
+                yield s[start:i + 1]
+                start = None
+
+
+def _json_calls(blob):
+    """Parse one-or-more tool-call dicts from a blob.
+
+    Accepts a JSON array, a single JSON object, or several objects run together
+    / separated by ';' or whitespace (the variants Mistral and Llama emit).
+    """
+    blob = blob.strip()
+    if not blob:
+        return []
+    try:
+        obj = json.loads(blob)
+        if isinstance(obj, list):
+            return [o for o in obj if isinstance(o, dict)]
+        if isinstance(obj, dict):
+            return [obj]
+    except (ValueError, TypeError):
+        pass
+    calls = []
+    for chunk in _iter_json_objects(blob):
+        try:
+            o = json.loads(chunk)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(o, dict):
+            calls.append(o)
+    return calls
+
+
+def render_tools_prompt(tools):
+    """Build a system-prompt block describing tools in Qwen3-Coder format."""
+    specs = []
+    for t in tools or []:
+        fn = t.get("function", t) if isinstance(t, dict) else {}
+        if fn.get("name"):
+            specs.append(json.dumps(fn, ensure_ascii=False))
+    if not specs:
+        return ""
+    return (
+        "You have access to the following tools. When you need to call one, "
+        "emit it exactly in this format (one <tool_call> block per call, and "
+        "nothing else in that turn):\n"
+        "<tool_call>\n<function=TOOL_NAME>\n<parameter=ARG_NAME>\nARG_VALUE\n"
+        "</parameter>\n</function>\n</tool_call>\n\n"
+        "Available tools (JSON schema):\n<tools>\n"
+        + "\n".join(specs)
+        + "\n</tools>"
+    )
+
+
+def _tool_calls_to_text(tool_calls):
+    """Render assistant tool_calls (from history) back into Qwen3-Coder XML."""
+    blocks = []
+    for tc in tool_calls:
+        fn = tc.get("function", {})
+        name = fn.get("name", "")
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except (ValueError, TypeError):
+            args = {}
+        params = "".join(
+            f"<parameter={k}>\n{v if isinstance(v, str) else json.dumps(v)}\n</parameter>\n"
+            for k, v in args.items()
+        )
+        blocks.append(f"<tool_call>\n<function={name}>\n{params}</function>\n</tool_call>")
+    return "\n".join(blocks)
+
+
+def prepare_messages_for_tools(messages, tools):
+    """Normalize OpenAI messages for a tool-enabled turn.
+
+    - Injects/extends a system message describing the tools.
+    - Renders prior assistant tool_calls back into the model's XML so the
+      conversation stays coherent across turns.
+    - Folds `tool` result messages into tagged user content (works regardless
+      of whether the chat template knows the `tool` role).
+    """
+    tool_prompt = render_tools_prompt(tools)
+    out = []
+    injected = False
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content")
+
+        if role == "system":
+            sys_text = content if isinstance(content, str) else (content or "")
+            if tool_prompt and not injected:
+                sys_text = (sys_text + "\n\n" + tool_prompt).strip()
+                injected = True
+            out.append({"role": "system", "content": sys_text})
+            continue
+
+        if role == "assistant" and msg.get("tool_calls"):
+            rendered = _tool_calls_to_text(msg["tool_calls"])
+            base = content if isinstance(content, str) and content else ""
+            out.append({"role": "assistant", "content": (base + "\n" + rendered).strip()})
+            continue
+
+        if role == "tool":
+            name = msg.get("name", "")
+            result = content if isinstance(content, str) else json.dumps(content)
+            tag = f' name="{name}"' if name else ""
+            out.append({"role": "user",
+                        "content": f"<tool_response{tag}>\n{result}\n</tool_response>"})
+            continue
+
+        # plain user/assistant (content may be None on a tool-call-only turn)
+        out.append({"role": role, "content": content if content is not None else ""})
+
+    if tool_prompt and not injected:
+        out.insert(0, {"role": "system", "content": tool_prompt})
+    return out
+
+
+def parse_tool_calls(text, tools):
+    """Extract tool calls from generated text.
+
+    Returns (content_text, tool_calls) where tool_calls is a list of OpenAI
+    tool_call dicts (empty if none found). Handles Qwen3-Coder XML, Hermes-style
+    JSON-in-<tool_call>, Mistral [TOOL_CALLS], Llama <|python_tag|>, DeepSeek's
+    <｜tool▁calls▁begin｜> blocks, and a bare JSON fallback.
+    """
+    param_types = _tool_param_types(tools)
+    known = set(param_types)
+    tool_calls = []
+
+    def add(name, args):
+        tool_calls.append({
+            "id": "call_" + uuid.uuid4().hex[:24],
+            "type": "function",
+            "function": {"name": name,
+                         "arguments": json.dumps(args, ensure_ascii=False)},
+        })
+
+    blocks = _TOOL_CALL_RE.findall(text)
+    if blocks:
+        content = _TOOL_CALL_RE.sub("", text).strip()
+        for block in blocks:
+            block = block.strip()
+            m = _FUNCTION_RE.search(block)
+            if m:
+                name = m.group(1).strip()
+                args = {}
+                for k, v in _PARAM_RE.findall(m.group(2)):
+                    k = k.strip()
+                    args[k] = _coerce_value(v, param_types.get(name, {}).get(k, "string"))
+                add(name, args)
+            else:
+                # JSON inside <tool_call> (Hermes / Qwen2.5 style)
+                try:
+                    obj = json.loads(block)
+                except (ValueError, TypeError):
+                    obj = None
+                name, args = _extract_name_args(obj)
+                if name:
+                    add(name, args)
+        return content, tool_calls
+
+    # Mistral: [TOOL_CALLS] followed by a JSON array of {name, arguments}.
+    m = _MISTRAL_RE.search(text)
+    if m:
+        content = text[:m.start()].strip()
+        for obj in _json_calls(text[m.end():]):
+            name, args = _extract_name_args(obj)
+            if name:
+                add(name, args)
+        if tool_calls:
+            return content, tool_calls
+
+    # Llama 3.x: <|python_tag|> then JSON object(s) (';'-separated for parallel).
+    m = _PYTHON_TAG_RE.search(text)
+    if m:
+        content = text[:m.start()].strip()
+        for obj in _json_calls(text[m.end():]):
+            name, args = _extract_name_args(obj)
+            if name:
+                add(name, args)
+        if tool_calls:
+            return content, tool_calls
+
+    # DeepSeek: function name + ```json args``` inside <｜tool▁call▁begin｜> blocks.
+    if _DS_BEGIN in text:
+        content = text.split(_DS_BEGIN, 1)[0].strip()
+        for name, blob in _DS_CALL_RE.findall(text):
+            try:
+                args = json.loads(blob)
+            except (ValueError, TypeError):
+                args = {}
+            if name.strip():
+                add(name.strip(), args if isinstance(args, dict) else {})
+        if tool_calls:
+            return content, tool_calls
+
+    # Fallback: bare JSON (object or array) where every call names a known tool
+    # — the failure mode when the model isn't told the proper format. We only
+    # treat it as tool calls if all names match, so normal JSON answers pass
+    # through untouched.
+    stripped = text.strip()
+    if known and stripped[:1] in ("{", "["):
+        named = []
+        for obj in _json_calls(stripped):
+            name, args = _extract_name_args(obj)
+            if name is None:
+                # Some models emit {"function": "x", "k": v, ...} with no
+                # arguments wrapper — treat leftover keys as the arguments.
+                continue
+            if not args:
+                args = {k: v for k, v in obj.items()
+                        if k not in ("name", "function", "type",
+                                     "arguments", "parameters")}
+            named.append((name, args))
+        if named and all(n in known for n, _ in named):
+            for n, a in named:
+                add(n, a)
+            return "", tool_calls
+
+    return text, tool_calls
 
 
 # ---------------------------------------------------------------------------
@@ -585,6 +931,11 @@ primary = None        # main model (NPU, GPU, or CPU)
 secondary = None      # optional second model (GPU, for vision or bigger LLM)
 whisper_slot = None   # optional Whisper STT model
 max_dim = 768
+debug = False
+vscode_compat = False  # report a real Ollama version so VS Code accepts us
+
+# Ollama version VS Code expects; fake but recent enough to pass its checks.
+VSCODE_OLLAMA_VERSION = "0.18.3"
 _request_counter = itertools.count(1)  # thread-safe id generator
 
 
@@ -608,6 +959,31 @@ def overall_status():
 
 def openai_error(message, error_type="invalid_request_error", status=400):
     return jsonify({"error": {"message": message, "type": error_type}}), status
+
+
+def _sse_replay(completion_id, created, model, message, finish_reason):
+    """Emit a buffered chat result as an OpenAI streaming SSE sequence.
+
+    Used for tool-enabled turns, where we must buffer the full generation
+    before we can hand back a structured tool_calls delta.
+    """
+    def chunk(delta, finish=None):
+        return "data: " + json.dumps({
+            "id": completion_id, "object": "chat.completion.chunk",
+            "created": created, "model": model,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+        }) + "\n\n"
+
+    yield chunk({"role": "assistant"})
+    if message.get("content"):
+        yield chunk({"content": message["content"]})
+    for i, tc in enumerate(message.get("tool_calls") or []):
+        yield chunk({"tool_calls": [{
+            "index": i, "id": tc["id"], "type": "function",
+            "function": tc["function"],
+        }]})
+    yield chunk({}, finish_reason)
+    yield "data: [DONE]\n\n"
 
 
 def _slot_serviceable(slot):
@@ -644,6 +1020,41 @@ def _route_request(has_images, requested_model):
 
     # Single mode — everything goes to primary
     return primary if _slot_serviceable(primary) else None
+
+
+def _tools_supported(slot):
+    """Tool calling is GPU/iGPU-only.
+
+    Small NPU-class models can't reliably drive multi-step agent loops, and
+    tool turns are buffered (no token streaming) — a poor fit for the NPU path.
+    On NPU/CPU we ignore any `tools` in the request and answer as a plain chat.
+    """
+    return bool(slot) and slot.device_name == "GPU"
+
+
+# ---------------------------------------------------------------------------
+# Debug logging
+# ---------------------------------------------------------------------------
+
+def _log_request(api_label):
+    if not debug:
+        return
+    body_raw = request.get_data(as_text=True)
+    try:
+        body_str = json.dumps(json.loads(body_raw), indent=2) if body_raw else ""
+    except Exception:
+        body_str = body_raw
+    ua = request.headers.get("User-Agent", "")
+    print(f"{datetime.now():%H:%M:%S} [DEBUG/{api_label}] {request.method} {request.path}"
+          f"  UA={ua!r}", flush=True)
+    if body_str:
+        for line in body_str.splitlines():
+            print(f"  {line}", flush=True)
+
+
+@app.before_request
+def _debug_openai():
+    _log_request("OpenAI")
 
 
 # ---------------------------------------------------------------------------
@@ -761,6 +1172,7 @@ def chat_completions():
     top_p = body.get("top_p", 1.0)
     stream = body.get("stream", False)
     requested_model = body.get("model", "")
+    tools = body.get("tools") or []
 
     # Parse messages
     try:
@@ -778,6 +1190,20 @@ def chat_completions():
         if images:
             return openai_error("No vision model loaded. Send text only, or load a VLM.")
         return openai_error("No model ready to handle this request.", "server_error", 503)
+
+    # Tool calling is GPU/iGPU-only. Only when a GPU slot serves the turn do we
+    # render tool specs into the prompt and (later) parse calls back out; on
+    # NPU/CPU the request is answered as a plain chat turn.
+    tools_active = bool(tools) and _tools_supported(slot)
+    if tools_active:
+        try:
+            text_prompt, images, raw_messages = parse_messages(
+                prepare_messages_for_tools(messages, tools), max_dim)
+        except Exception as e:
+            return openai_error(f"Failed to parse request: {e}")
+    elif tools:
+        print(f"{datetime.now():%H:%M:%S} -- [{slot.device_name}] "
+              f"tools ignored (GPU-only feature)", flush=True)
 
     # Reject images on LLM
     if images and slot.model_type == "llm":
@@ -845,7 +1271,9 @@ def chat_completions():
         return resp
 
     # --- LLM path ---
-    if stream:
+    # Tool-enabled turns are buffered (not token-streamed): we can only emit a
+    # structured tool_calls delta once the whole <tool_call> block is in hand.
+    if stream and not tools_active:
         return Response(
             slot.stream_llm(raw_messages, gen, completion_id, created, t0),
             mimetype="text/event-stream",
@@ -861,13 +1289,37 @@ def chat_completions():
     elapsed = time.perf_counter() - t0
     n_words = len(text.split())
     print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] "
-          f"~{n_words} tokens in {elapsed:.1f}s ({n_words / elapsed:.1f} tok/s)",
+          f"~{n_words} tokens in {elapsed:.1f}s ({n_words / max(elapsed, 1e-6):.1f} tok/s)",
           flush=True)
+
+    tool_calls = []
+    if tools_active:
+        text, tool_calls = parse_tool_calls(text, tools)
+        if tool_calls:
+            print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] "
+                  f"{len(tool_calls)} tool call(s): "
+                  f"{', '.join(tc['function']['name'] for tc in tool_calls)}",
+                  flush=True)
+
+    if tool_calls:
+        message = {"role": "assistant", "content": text or None, "tool_calls": tool_calls}
+        finish_reason = "tool_calls"
+    else:
+        message = {"role": "assistant", "content": text}
+        finish_reason = "stop"
+
+    if stream:
+        # tools + stream: replay the buffered result as a short SSE sequence.
+        return Response(
+            _sse_replay(completion_id, created, slot.model_name, message, finish_reason),
+            mimetype="text/event-stream",
+            headers={"X-Device": slot.device_name, "X-Model": slot.model_name},
+        )
 
     resp = jsonify({
         "id": completion_id, "object": "chat.completion",
         "created": created, "model": slot.model_name,
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+        "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
         "usage": {"prompt_tokens": -1, "completion_tokens": -1, "total_tokens": -1},
     })
     resp.headers["X-Device"] = slot.device_name
@@ -885,6 +1337,11 @@ ollama_app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
 OLLAMA_PORT = 11434
 
 
+@ollama_app.before_request
+def _debug_ollama():
+    _log_request("Ollama")
+
+
 @ollama_app.route("/")
 def ollama_health():
     return "Ollama is running"
@@ -892,7 +1349,10 @@ def ollama_health():
 
 @ollama_app.route("/api/version", methods=["GET"])
 def ollama_version():
-    return jsonify({"version": "nollama-0.1.0"})
+    # VS Code's Ollama client rejects non-numeric versions, so when
+    # --vscode-compat is set we report a real Ollama version to please it.
+    version = VSCODE_OLLAMA_VERSION if vscode_compat else "nollama-0.1.0"
+    return jsonify({"version": version})
 
 
 @ollama_app.route("/api/tags", methods=["GET"])
@@ -917,8 +1377,20 @@ def ollama_tags():
 def ollama_show():
     body = request.get_json(silent=True) or {}
     model_name = body.get("model", "")
+
+    model_info = {}
+    # Copilot Chat uses `general.basename` to label models in the picker, but
+    # it prefers the name returned by /api/tags. Echo back what we returned there
+    # so the picker shows the same name the user sees in /api/tags.
+    if request.headers.get("User-Agent", "").startswith("GitHubCopilotChat/"):
+        model_info["general.basename"] = model_name
+
     for slot in (primary, secondary):
         if slot and slot.model_name == model_name:
+            # Only advertise `tools` for GPU/iGPU slots — tool calling is a
+            # GPU-only feature, so NPU/CPU models show as completion-only and
+            # Copilot won't offer them for agent (tool) mode.
+            caps = ["completion"] + (["tools"] if _tools_supported(slot) else [])
             return jsonify({
                 "model": model_name,
                 "details": {
@@ -926,9 +1398,12 @@ def ollama_show():
                     "parameter_size": "",
                     "quantization_level": "int4",
                 },
-                "model_info": {},
+                "model_info": model_info,
+                "capabilities": caps,
             })
-    return jsonify({"model": model_name, "details": {}, "model_info": {}})
+    # Unknown model — we can't confirm it's on a GPU, so don't claim tools.
+    return jsonify({"model": model_name, "details": {}, "model_info": model_info,
+                    "capabilities": ["completion"]})
 
 
 @ollama_app.route("/api/chat", methods=["POST"])
@@ -943,6 +1418,7 @@ def ollama_chat():
 
     max_tokens = body.get("options", {}).get("num_predict", 2048)
     temperature = body.get("options", {}).get("temperature", 0.0)
+    tools = body.get("tools") or []
 
     # Translate Ollama messages to internal format
     has_images = False
@@ -964,16 +1440,27 @@ def ollama_chat():
         else:
             internal_messages.append({"role": role, "content": content})
 
+    # Route to device
+    slot = _route_request(has_images, requested_model)
+    if slot is None:
+        return jsonify({"error": "no model ready"}), 503
+
+    # Tool calling is GPU/iGPU-only (see chat_completions). Only on a GPU slot do
+    # we render tool specs into the prompt; on NPU/CPU we ignore `tools`.
+    tools_active = bool(tools) and _tools_supported(slot)
+    if tools_active:
+        # Tool turns are text-only: render tool specs + prior calls into the
+        # prompt. (Images + tools simultaneously is not a supported path.)
+        internal_messages = prepare_messages_for_tools(ollama_messages, tools)
+    elif tools:
+        print(f"{datetime.now():%H:%M:%S} -- [{slot.device_name}] [Ollama] "
+              f"tools ignored (GPU-only feature)", flush=True)
+
     # Parse through same pipeline as OpenAI
     try:
         text_prompt, images, raw_messages = parse_messages(internal_messages, max_dim)
     except Exception as e:
         return jsonify({"error": str(e)}), 400
-
-    # Route to device
-    slot = _route_request(has_images, requested_model)
-    if slot is None:
-        return jsonify({"error": "no model ready"}), 503
 
     if has_images and slot.model_type == "llm":
         return jsonify({"error": f"model '{slot.model_name}' does not support images"}), 400
@@ -1018,14 +1505,13 @@ def ollama_chat():
             "total_duration": int(elapsed * 1e9),
         })
 
-    # LLM path
-    if stream:
+    # LLM path. Tool turns are buffered (see chat_completions for why).
+    if stream and not tools_active:
         return Response(
             _ollama_stream_chat(slot, raw_messages, gen, t0),
             mimetype="application/x-ndjson",
         )
 
-    # Non-streaming LLM
     try:
         text = slot.generate_llm(raw_messages, gen)
     except Exception as e:
@@ -1035,12 +1521,33 @@ def ollama_chat():
     print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] [Ollama] "
           f"~{len(text.split())} tokens in {elapsed:.1f}s", flush=True)
 
-    return jsonify({
+    message = {"role": "assistant", "content": text}
+    if tools_active:
+        text, tool_calls = parse_tool_calls(text, tools)
+        message["content"] = text
+        if tool_calls:
+            # Ollama shape: arguments are an object, not a JSON string.
+            message["tool_calls"] = [{
+                "function": {
+                    "name": tc["function"]["name"],
+                    "arguments": json.loads(tc["function"]["arguments"]),
+                }
+            } for tc in tool_calls]
+            print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] [Ollama] "
+                  f"{len(tool_calls)} tool call(s): "
+                  f"{', '.join(tc['function']['name'] for tc in tool_calls)}",
+                  flush=True)
+
+    final = {
         "model": slot.model_name,
-        "message": {"role": "assistant", "content": text},
+        "message": message,
         "done": True,
         "total_duration": int(elapsed * 1e9),
-    })
+    }
+    if stream:
+        # tools + stream: emit the buffered result as a single ndjson line.
+        return Response(json.dumps(final) + "\n", mimetype="application/x-ndjson")
+    return jsonify(final)
 
 
 def _ollama_stream_chat(slot, raw_messages, gen, t0):
@@ -1267,6 +1774,13 @@ def ollama_copy():
     return "", 200
 
 
+# Copilot Chat 0.53+ sends actual chat via /v1/chat/completions on the Ollama
+# port rather than /api/chat — delegate to the same handler.
+@ollama_app.route("/v1/chat/completions", methods=["POST"])
+def ollama_v1_chat_completions():
+    return chat_completions()
+
+
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
@@ -1405,15 +1919,22 @@ def parse_args():
     p.add_argument("--idle-timeout", type=int, default=1800,
                    help="Change idle-unload timeout in seconds "
                         "(default: 1800 = 30 min). Use 0 to disable unloading.")
+    p.add_argument("--debug", action="store_true",
+                   help="Log every inbound API request (method, path, User-Agent, body)")
+    p.add_argument("--vscode-compat", action="store_true",
+                   help=f"Report a real Ollama version ({VSCODE_OLLAMA_VERSION}) on "
+                        f"/api/version so VS Code's Ollama client accepts the server")
     return p.parse_args()
 
 
 def main():
-    global primary, secondary, whisper_slot, max_dim
+    global primary, secondary, whisper_slot, max_dim, debug, vscode_compat
 
     args = parse_args()
     model_dir = os.path.expanduser(args.model_dir)
     max_dim = args.max_dim
+    debug = args.debug
+    vscode_compat = args.vscode_compat
 
     # Quiet Flask/Werkzeug startup noise: kills the "Serving Flask app" /
     # "Debug mode: off" / "Running on http://..." / "Press CTRL+C to quit"
