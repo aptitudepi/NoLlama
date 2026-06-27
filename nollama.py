@@ -54,15 +54,24 @@ def is_vlm(model_dir):
     """Detect if a model is a VLM.
 
     The definitive signal is structural: OpenVINO exports a VLM as a
-    multi-component model with a separate vision encoder
-    (openvino_vision_embeddings_model.xml) alongside the language model,
-    whereas a text-only LLM is a single openvino_model.xml. Architecture-name
-    sniffing misses new generations — e.g. Qwen3.5 reports
-    Qwen3_5ForConditionalGeneration / qwen3_5, matching none of the keys below
-    — so check the files first and fall back to the config keys.
+    multi-component model with a separate vision encoder alongside the language
+    model, whereas a text-only LLM is a single openvino_model.xml. Match *any*
+    vision-encoder component file rather than one exact name — the filenames
+    vary across generations (Qwen3.5 ships three:
+    openvino_vision_embeddings_model.xml, ..._merger_model.xml, ..._pos_model.xml;
+    LLaVA-style exports use image_encoder), and a single hard-coded name would
+    miss a future variant. Architecture-name sniffing misses new generations
+    too — e.g. Qwen3.5 reports Qwen3_5ForConditionalGeneration / qwen3_5,
+    matching none of the keys below — so check the files first and fall back to
+    the config keys.
     """
-    if os.path.isfile(os.path.join(model_dir, "openvino_vision_embeddings_model.xml")):
-        return True
+    try:
+        for fn in os.listdir(model_dir):
+            low = fn.lower()
+            if low.endswith(".xml") and ("vision" in low or "image_encoder" in low):
+                return True
+    except OSError:
+        pass
     cfg_path = os.path.join(model_dir, "config.json")
     if not os.path.isfile(cfg_path):
         return False
@@ -73,7 +82,8 @@ def is_vlm(model_dir):
         model_type = cfg.get("model_type", "").lower()
         return any(
             k in arch or k in model_type
-            for k in ("vl", "vision", "llava", "qwen2vl", "internvl", "minicpm")
+            for k in ("vl", "vision", "llava", "qwen2vl", "internvl", "minicpm",
+                      "multimodal", "image_text", "got_ocr")
         )
     except Exception:
         return False
