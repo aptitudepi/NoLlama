@@ -15,11 +15,15 @@ OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
 - `threaded=True` on Flask, concurrency via per-device locks
 - `models.json` — curated model registry (npu, gpu_vlm, gpu_llm, whisper categories)
 - `install.ps1` detects devices, shows model menu, generates `start.ps1`
-- Tool calling: tool specs from the request `tools` array are rendered into a system
-  prompt (Qwen3-Coder native format); the model's emitted call is parsed back into
-  OpenAI/Ollama `tool_calls`. `parse_tool_calls` recognizes several native formats, since
-  a small model often ignores our prompt and falls back to what it was trained on: Qwen3-Coder
-  XML, Hermes JSON-in-`<tool_call>`, Mistral `[TOOL_CALLS]`, Llama `<|python_tag|>`, DeepSeek
+- Tool calling: **GPU/iGPU-only** (gated by `_tools_supported`, i.e. `device_name == "GPU"`).
+  NPU/CPU models can't drive agent loops and tool turns are buffered, so when a non-GPU
+  slot serves the request we ignore `tools` and answer as plain chat; `/api/show` only
+  advertises the `tools` capability for GPU slots (so Copilot won't offer NPU models for
+  agent mode). Tool specs from the request `tools` array are rendered into a system prompt
+  (Qwen3-Coder native format); the model's emitted call is parsed back into OpenAI/Ollama
+  `tool_calls`. `parse_tool_calls` recognizes several native formats, since a small model
+  often ignores our prompt and falls back to what it was trained on: Qwen3-Coder XML, Hermes
+  JSON-in-`<tool_call>`, Mistral `[TOOL_CALLS]`, Llama `<|python_tag|>`, DeepSeek
   `<｜tool▁calls▁begin｜>` blocks, plus a bare-JSON fallback. See `render_tools_prompt` /
   `parse_tool_calls`. Copilot Chat 0.53+ hits `/v1/chat/completions` (delegates to
   `chat_completions`); `/api/chat` also handled.

@@ -1011,6 +1011,16 @@ def _route_request(has_images, requested_model):
     return primary if _slot_serviceable(primary) else None
 
 
+def _tools_supported(slot):
+    """Tool calling is GPU/iGPU-only.
+
+    Small NPU-class models can't reliably drive multi-step agent loops, and
+    tool turns are buffered (no token streaming) — a poor fit for the NPU path.
+    On NPU/CPU we ignore any `tools` in the request and answer as a plain chat.
+    """
+    return bool(slot) and slot.device_name == "GPU"
+
+
 # ---------------------------------------------------------------------------
 # Debug logging
 # ---------------------------------------------------------------------------
@@ -1153,11 +1163,6 @@ def chat_completions():
     requested_model = body.get("model", "")
     tools = body.get("tools") or []
 
-    # Tool-enabled turn: render tool specs into the prompt and normalize any
-    # prior tool_calls / tool results so the model sees a coherent history.
-    if tools:
-        messages = prepare_messages_for_tools(messages, tools)
-
     # Parse messages
     try:
         text_prompt, images, raw_messages = parse_messages(messages, max_dim)
@@ -1174,6 +1179,20 @@ def chat_completions():
         if images:
             return openai_error("No vision model loaded. Send text only, or load a VLM.")
         return openai_error("No model ready to handle this request.", "server_error", 503)
+
+    # Tool calling is GPU/iGPU-only. Only when a GPU slot serves the turn do we
+    # render tool specs into the prompt and (later) parse calls back out; on
+    # NPU/CPU the request is answered as a plain chat turn.
+    tools_active = bool(tools) and _tools_supported(slot)
+    if tools_active:
+        try:
+            text_prompt, images, raw_messages = parse_messages(
+                prepare_messages_for_tools(messages, tools), max_dim)
+        except Exception as e:
+            return openai_error(f"Failed to parse request: {e}")
+    elif tools:
+        print(f"{datetime.now():%H:%M:%S} -- [{slot.device_name}] "
+              f"tools ignored (GPU-only feature)", flush=True)
 
     # Reject images on LLM
     if images and slot.model_type == "llm":
@@ -1243,7 +1262,7 @@ def chat_completions():
     # --- LLM path ---
     # Tool-enabled turns are buffered (not token-streamed): we can only emit a
     # structured tool_calls delta once the whole <tool_call> block is in hand.
-    if stream and not tools:
+    if stream and not tools_active:
         return Response(
             slot.stream_llm(raw_messages, gen, completion_id, created, t0),
             mimetype="text/event-stream",
@@ -1263,7 +1282,7 @@ def chat_completions():
           flush=True)
 
     tool_calls = []
-    if tools:
+    if tools_active:
         text, tool_calls = parse_tool_calls(text, tools)
         if tool_calls:
             print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] "
@@ -1357,6 +1376,10 @@ def ollama_show():
 
     for slot in (primary, secondary):
         if slot and slot.model_name == model_name:
+            # Only advertise `tools` for GPU/iGPU slots — tool calling is a
+            # GPU-only feature, so NPU/CPU models show as completion-only and
+            # Copilot won't offer them for agent (tool) mode.
+            caps = ["completion"] + (["tools"] if _tools_supported(slot) else [])
             return jsonify({
                 "model": model_name,
                 "details": {
@@ -1365,10 +1388,11 @@ def ollama_show():
                     "quantization_level": "int4",
                 },
                 "model_info": model_info,
-                "capabilities": ["completion", "tools"],
+                "capabilities": caps,
             })
+    # Unknown model — we can't confirm it's on a GPU, so don't claim tools.
     return jsonify({"model": model_name, "details": {}, "model_info": model_info,
-                    "capabilities": ["completion", "tools"]})
+                    "capabilities": ["completion"]})
 
 
 @ollama_app.route("/api/chat", methods=["POST"])
@@ -1387,39 +1411,45 @@ def ollama_chat():
 
     # Translate Ollama messages to internal format
     has_images = False
-    if tools:
-        # Tool turns are text-only here: render tool specs + prior calls into
-        # the prompt. (Images + tools simultaneously is not a supported path.)
-        internal_messages = prepare_messages_for_tools(ollama_messages, tools)
-    else:
-        internal_messages = []
-        for msg in ollama_messages:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            msg_images = msg.get("images", [])
+    internal_messages = []
+    for msg in ollama_messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        msg_images = msg.get("images", [])
 
-            if msg_images:
-                has_images = True
-                blocks = [{"type": "text", "text": content}]
-                for img_b64 in msg_images:
-                    blocks.append({
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
-                    })
-                internal_messages.append({"role": role, "content": blocks})
-            else:
-                internal_messages.append({"role": role, "content": content})
+        if msg_images:
+            has_images = True
+            blocks = [{"type": "text", "text": content}]
+            for img_b64 in msg_images:
+                blocks.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
+                })
+            internal_messages.append({"role": role, "content": blocks})
+        else:
+            internal_messages.append({"role": role, "content": content})
+
+    # Route to device
+    slot = _route_request(has_images, requested_model)
+    if slot is None:
+        return jsonify({"error": "no model ready"}), 503
+
+    # Tool calling is GPU/iGPU-only (see chat_completions). Only on a GPU slot do
+    # we render tool specs into the prompt; on NPU/CPU we ignore `tools`.
+    tools_active = bool(tools) and _tools_supported(slot)
+    if tools_active:
+        # Tool turns are text-only: render tool specs + prior calls into the
+        # prompt. (Images + tools simultaneously is not a supported path.)
+        internal_messages = prepare_messages_for_tools(ollama_messages, tools)
+    elif tools:
+        print(f"{datetime.now():%H:%M:%S} -- [{slot.device_name}] [Ollama] "
+              f"tools ignored (GPU-only feature)", flush=True)
 
     # Parse through same pipeline as OpenAI
     try:
         text_prompt, images, raw_messages = parse_messages(internal_messages, max_dim)
     except Exception as e:
         return jsonify({"error": str(e)}), 400
-
-    # Route to device
-    slot = _route_request(has_images, requested_model)
-    if slot is None:
-        return jsonify({"error": "no model ready"}), 503
 
     if has_images and slot.model_type == "llm":
         return jsonify({"error": f"model '{slot.model_name}' does not support images"}), 400
@@ -1465,7 +1495,7 @@ def ollama_chat():
         })
 
     # LLM path. Tool turns are buffered (see chat_completions for why).
-    if stream and not tools:
+    if stream and not tools_active:
         return Response(
             _ollama_stream_chat(slot, raw_messages, gen, t0),
             mimetype="application/x-ndjson",
@@ -1481,7 +1511,7 @@ def ollama_chat():
           f"~{len(text.split())} tokens in {elapsed:.1f}s", flush=True)
 
     message = {"role": "assistant", "content": text}
-    if tools:
+    if tools_active:
         text, tool_calls = parse_tool_calls(text, tools)
         message["content"] = text
         if tool_calls:
