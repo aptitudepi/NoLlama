@@ -6,3 +6,5 @@ start.ps1
 __pycache__/
 *.pyc
 bench-results/
+scripts/.watch_title
+scripts/.watch_body.md

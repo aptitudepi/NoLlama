@@ -138,6 +138,20 @@
 
     "gpu_llm": [
         {
+            "name": "Qwen2.5-Coder 14B (INT4)",
+            "hf_id": "OpenVINO/Qwen2.5-Coder-14B-Instruct-int4-ov",
+            "source": "pre-exported",
+            "est_size_gb": 8,
+            "notes": "Recommended for VS Code Copilot Chat / tool calling (--vscode-compat). Fits 16GB with KV headroom. Emits Hermes-style <tool_call> JSON, handled by parse_tool_calls. Newer Qwen3-Coder exists only as 30B-A3B (17GB, falls back to CPU on 16GB), so this is the best coder that fits."
+        },
+        {
+            "name": "Qwen2.5-Coder 7B (INT4)",
+            "hf_id": "OpenVINO/Qwen2.5-Coder-7B-Instruct-int4-ov",
+            "source": "pre-exported",
+            "est_size_gb": 5,
+            "notes": "Lighter Copilot/tool-calling option. Faster than the 14B, weaker on multi-step agent loops. Same Hermes tool-call format."
+        },
+        {
             "name": "Qwen3 14B (INT4)",
             "hf_id": "OpenVINO/Qwen3-14B-int4-ov",
             "source": "pre-exported",
