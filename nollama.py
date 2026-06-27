@@ -477,6 +477,24 @@ def parse_tool_calls(text, tools):
                     add(name, args)
         return content, tool_calls
 
+    # Qwen2.5-Coder native: bare <function=NAME>...</function> with NO
+    # surrounding <tool_call> wrapper. The Qwen2.5-Coder models emit this form
+    # regardless of the prompt we render, so the wrapped path above never fires
+    # for them. _FUNCTION_RE only matches the literal <function=...> syntax, so
+    # this won't trip on ordinary prose.
+    fn_blocks = list(_FUNCTION_RE.finditer(text))
+    if fn_blocks:
+        content = _FUNCTION_RE.sub("", text).strip()
+        for m in fn_blocks:
+            name = m.group(1).strip()
+            args = {}
+            for k, v in _PARAM_RE.findall(m.group(2)):
+                k = k.strip()
+                args[k] = _coerce_value(v, param_types.get(name, {}).get(k, "string"))
+            add(name, args)
+        if tool_calls:
+            return content, tool_calls
+
     # Mistral: [TOOL_CALLS] followed by a JSON array of {name, arguments}.
     m = _MISTRAL_RE.search(text)
     if m:
