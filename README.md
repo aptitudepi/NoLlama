@@ -49,7 +49,7 @@ instantly, no conversion), and returning users see them flagged
 - **VLM support** — send images via base64 or `file://` URIs for vision models
 - **Streaming** — token-by-token for text chat, with collapsible thinking blocks
 - **Dual device** — NPU for chat + GPU for vision, simultaneously
-- **Tool calling / agents** (GPU only) — works with VS Code Copilot Chat and OpenCLAW; the model drives tools on the ARC GPU
+- **Tool calling / agents** (GPU/iGPU + CPU, not NPU) — works with VS Code Copilot Chat and OpenCLAW; the model drives tools on the ARC GPU or a strong CPU
 - **Built-in web UI** — chat, image drop zone, model selector, dark theme
 - **Model menu** — curated list of verified models, no conversion nightmares
 
@@ -420,12 +420,19 @@ NoLlama can drive tool-calling coding agents — the model emits function calls,
 NoLlama parses them into OpenAI/Ollama `tool_calls`, and the agent acts on the
 results.
 
-> **Tool calling is GPU/iGPU-only.** Small NPU-class models can't reliably drive
-> multi-step agent loops, and tool turns are buffered (not token-streamed), so
-> NoLlama only honors `tools` when a **GPU** slot serves the request — on NPU/CPU
-> it ignores `tools` and answers as plain chat. `/api/show` only advertises the
-> `tools` capability for GPU slots. Load a GPU LLM (a coder model such as the
-> Qwen2.5-Coder GPU builds in the menu works well).
+> **Tool calling runs on GPU/iGPU and CPU — not the NPU.** The NPU has a hard
+> prompt cap and small NPU-class models can't reliably drive agent loops, so
+> NoLlama ignores `tools` there and answers as plain chat; `/api/show` advertises
+> the `tools` capability only for GPU/CPU slots. Load a coder LLM on the GPU, or
+> on a strong desktop CPU (many-core Core Ultra) where prefill can beat a weak
+> iGPU. The Qwen2.5-Coder GPU builds in the menu work well; pick a smaller size
+> (7B) for snappier prefill on big agent prompts.
+>
+> Tool turns are **buffered** (the whole reply is generated before the structured
+> `tool_calls` are sent), but the server emits SSE keep-alive pings during a long
+> prefill so agent clients (Copilot/OpenCLAW) don't hit their idle timeout and
+> abort. Big agent system prompts (~20k tokens) prefill slowly on weak iGPUs — a
+> smaller model, the CPU, or trimming the client's tool set all help.
 
 The tool prompt is rendered in Qwen3-Coder native format, and `parse_tool_calls`
 also understands Hermes, Mistral `[TOOL_CALLS]`, Llama `<|python_tag|>`, DeepSeek,

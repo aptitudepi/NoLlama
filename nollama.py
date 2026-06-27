@@ -812,9 +812,16 @@ class DeviceSlot:
 
             while True:
                 try:
-                    token = token_queue.get(timeout=120)
+                    token = token_queue.get(timeout=HEARTBEAT_SECS)
                 except Empty:
-                    break
+                    # No token yet — likely a long prefill on a big prompt.
+                    # Emit an SSE comment to keep the connection alive so the
+                    # client's idle watchdog doesn't abort; the background
+                    # thread delivers tokens (or the None sentinel) when ready.
+                    if not t.is_alive():
+                        break
+                    yield ": ping\n\n"
+                    continue
                 if token is None:
                     break
                 token_count += 1
@@ -948,6 +955,7 @@ class WhisperSlot:
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MAX_REQUEST_BYTES = 50 * 1024 * 1024  # 50 MB — enough for large base64 images
+HEARTBEAT_SECS = 15  # SSE keep-alive cadence during long prefill (big prompts / tool turns)
 
 app = Flask("NoLlama",
             template_folder=os.path.join(SCRIPT_DIR, "templates"),
@@ -1014,6 +1022,77 @@ def _sse_replay(completion_id, created, model, message, finish_reason):
     yield "data: [DONE]\n\n"
 
 
+def _sse_tool_stream(slot, raw_messages, gen, tools, completion_id, created, t0):
+    """Buffered tool turn, streamed with keep-alive frames.
+
+    A tool turn must be fully generated before we can emit a structured
+    tool_calls delta — but prefilling a big agent prompt (e.g. an OpenCLAW
+    system prompt) on a small device can take minutes, longer than a client's
+    idle watchdog. So run generation in a background thread and emit SSE pings
+    until it finishes, then replay the parsed result. Without this the client
+    sees nothing during prefill and aborts (and OpenVINO can't cancel a blocked
+    prefill, so the abandoned generation keeps churning).
+    """
+    result = {}
+
+    def _run():
+        try:
+            result["text"] = slot.generate_llm(raw_messages, gen)
+        except Exception as e:  # noqa: BLE001 — surfaced to the client below
+            result["error"] = e
+
+    th = threading.Thread(target=_run, daemon=True)
+    th.start()
+
+    # Immediate role frame so the client sees activity at once, then a ping
+    # every HEARTBEAT_SECS while generation runs (no tokens exist yet).
+    yield ("data: " + json.dumps({
+        "id": completion_id, "object": "chat.completion.chunk",
+        "created": created, "model": slot.model_name,
+        "choices": [{"index": 0, "delta": {"role": "assistant"},
+                     "finish_reason": None}],
+    }) + "\n\n")
+    while th.is_alive():
+        th.join(timeout=HEARTBEAT_SECS)
+        if th.is_alive():
+            yield ": ping\n\n"
+
+    elapsed = time.perf_counter() - t0
+    if result.get("error") is not None:
+        print(f"{datetime.now():%H:%M:%S} !! [{slot.device_name}] "
+              f"LLM error: {result['error']}", flush=True)
+        yield ("data: " + json.dumps({
+            "id": completion_id, "object": "chat.completion.chunk",
+            "created": created, "model": slot.model_name,
+            "choices": [{"index": 0, "delta": {"content": f"\n[error: {result['error']}]"},
+                         "finish_reason": "error"}],
+        }) + "\n\n")
+        yield "data: [DONE]\n\n"
+        return
+
+    text = result.get("text", "")
+    n_words = len(text.split())
+    print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] "
+          f"~{n_words} tokens in {elapsed:.1f}s "
+          f"({n_words / max(elapsed, 1e-6):.1f} tok/s)", flush=True)
+
+    text, tool_calls = parse_tool_calls(text, tools)
+    if tool_calls:
+        print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] "
+              f"{len(tool_calls)} tool call(s): "
+              f"{', '.join(tc['function']['name'] for tc in tool_calls)}", flush=True)
+        message = {"role": "assistant", "content": text or None, "tool_calls": tool_calls}
+        finish_reason = "tool_calls"
+    else:
+        message = {"role": "assistant", "content": text}
+        finish_reason = "stop"
+
+    # Reuse the replay emitter (it re-sends a role frame — harmless, clients
+    # just set role twice) for the content/tool_calls/finish/[DONE] tail.
+    for frame in _sse_replay(completion_id, created, slot.model_name, message, finish_reason):
+        yield frame
+
+
 def _slot_serviceable(slot):
     """A slot can serve requests if loaded or just idle-unloaded (will reload)."""
     return slot and slot.status in ("ready", "idle_unloaded")
@@ -1051,13 +1130,16 @@ def _route_request(has_images, requested_model):
 
 
 def _tools_supported(slot):
-    """Tool calling is GPU/iGPU-only.
+    """Tool calling runs on GPU/iGPU and CPU, but not the NPU.
 
-    Small NPU-class models can't reliably drive multi-step agent loops, and
-    tool turns are buffered (no token streaming) — a poor fit for the NPU path.
-    On NPU/CPU we ignore any `tools` in the request and answer as a plain chat.
+    The NPU has a hard prompt cap (MAX_PROMPT_LEN) and small NPU-class models
+    can't reliably drive multi-step agent loops, so we never honor `tools` there
+    — that request is answered as plain chat. A capable coder LLM on the GPU, or
+    on a strong desktop CPU (e.g. Core Ultra 9 with many cores), drives tool
+    loops fine; tool turns are buffered with SSE keep-alive (see
+    _sse_tool_stream) so a slow prefill doesn't trip the client's watchdog.
     """
-    return bool(slot) and slot.device_name == "GPU"
+    return bool(slot) and slot.device_name in ("GPU", "CPU")
 
 
 # ---------------------------------------------------------------------------
@@ -1299,8 +1381,6 @@ def chat_completions():
         return resp
 
     # --- LLM path ---
-    # Tool-enabled turns are buffered (not token-streamed): we can only emit a
-    # structured tool_calls delta once the whole <tool_call> block is in hand.
     if stream and not tools_active:
         return Response(
             slot.stream_llm(raw_messages, gen, completion_id, created, t0),
@@ -1308,6 +1388,18 @@ def chat_completions():
             headers={"X-Device": slot.device_name, "X-Model": slot.model_name},
         )
 
+    # Tool turns must be buffered (we need the whole generation before emitting a
+    # structured tool_calls delta). When streaming, buffer in a background thread
+    # and emit SSE keep-alive frames so a long prefill on a big agent prompt
+    # doesn't trip the client's idle watchdog (see _sse_tool_stream).
+    if stream and tools_active:
+        return Response(
+            _sse_tool_stream(slot, raw_messages, gen, tools, completion_id, created, t0),
+            mimetype="text/event-stream",
+            headers={"X-Device": slot.device_name, "X-Model": slot.model_name},
+        )
+
+    # Non-streaming (with or without tools): one blocking generate + JSON reply.
     try:
         text = slot.generate_llm(raw_messages, gen)
     except Exception as e:
@@ -1335,14 +1427,6 @@ def chat_completions():
     else:
         message = {"role": "assistant", "content": text}
         finish_reason = "stop"
-
-    if stream:
-        # tools + stream: replay the buffered result as a short SSE sequence.
-        return Response(
-            _sse_replay(completion_id, created, slot.model_name, message, finish_reason),
-            mimetype="text/event-stream",
-            headers={"X-Device": slot.device_name, "X-Model": slot.model_name},
-        )
 
     resp = jsonify({
         "id": completion_id, "object": "chat.completion",

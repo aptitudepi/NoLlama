@@ -15,18 +15,20 @@ OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
 - `threaded=True` on Flask, concurrency via per-device locks
 - `models.json` — curated model registry (npu, gpu_vlm, gpu_llm, whisper categories)
 - `install.ps1` detects devices, shows model menu, generates `start.ps1`
-- Tool calling: **GPU/iGPU-only** (gated by `_tools_supported`, i.e. `device_name == "GPU"`).
-  NPU/CPU models can't drive agent loops and tool turns are buffered, so when a non-GPU
-  slot serves the request we ignore `tools` and answer as plain chat; `/api/show` only
-  advertises the `tools` capability for GPU slots (so Copilot won't offer NPU models for
-  agent mode). Tool specs from the request `tools` array are rendered into a system prompt
+- Tool calling: **GPU/iGPU + CPU** (gated by `_tools_supported`, i.e.
+  `device_name in ("GPU","CPU")`); the **NPU is excluded** — it has a hard prompt cap and
+  small NPU-class models can't drive agent loops, so when the NPU serves the request we
+  ignore `tools` and answer as plain chat. `/api/show` advertises the `tools` capability only
+  for GPU/CPU slots (so Copilot won't offer NPU models for agent mode). CPU is viable for
+  agents on strong desktops (e.g. Core Ultra 9, many cores) where prefill can beat a weak
+  iGPU. Tool specs from the request `tools` array are rendered into a system prompt
   (Qwen3-Coder native format); the model's emitted call is parsed back into OpenAI/Ollama
-  `tool_calls`. `parse_tool_calls` recognizes several native formats, since a small model
+  `tool_calls`. `parse_tool_calls` recognizes several native formats, since a model
   often ignores our prompt and falls back to what it was trained on: Qwen3-Coder XML, Hermes
-  JSON-in-`<tool_call>`, Mistral `[TOOL_CALLS]`, Llama `<|python_tag|>`, DeepSeek
-  `<｜tool▁calls▁begin｜>` blocks, plus a bare-JSON fallback. See `render_tools_prompt` /
-  `parse_tool_calls`. Copilot Chat 0.53+ hits `/v1/chat/completions` (delegates to
-  `chat_completions`); `/api/chat` also handled.
+  JSON-in-`<tool_call>`, **bare `<function=>` with no wrapper (Qwen2.5-Coder native)**, Mistral
+  `[TOOL_CALLS]`, Llama `<|python_tag|>`, DeepSeek `<｜tool▁calls▁begin｜>` blocks, plus a
+  bare-JSON fallback. See `render_tools_prompt` / `parse_tool_calls`. Copilot Chat 0.53+ hits
+  `/v1/chat/completions` (delegates to `chat_completions`); `/api/chat` also handled.
 
 ## Environment
 
@@ -57,11 +59,19 @@ OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
 - Qwen3 thinking models can exhaust token budget on `<think>` before producing an answer
 - Cancel (`/v1/cancel`) relies on OpenVINO invoking the streamer callback. If the native code blocks without yielding, cancel won't take effect — generation completes naturally.
 - Chat history unbounded in web UI — user clears with Ctrl+N when long sessions approach MAX_PROMPT_LEN
-- Tool-enabled turns are buffered, not token-streamed: we must see the whole `<tool_call>`
-  block before emitting a structured `tool_calls` delta, so when `tools` is present the full
-  generation is collected before any SSE/ndjson is sent (no incremental tokens that turn). In
-  Copilot agent mode every request carries tools, so all answers are buffered. A trailing-buffer
-  streamer (stream until a `<tool_call>` prefix appears) would restore streaming — not yet done.
+- Tool-enabled turns are buffered, not token-streamed: we must see the whole tool-call block
+  before emitting a structured `tool_calls` delta, so the full generation is collected before
+  the result is sent (no incremental tokens that turn). To stop a slow prefill on a big agent
+  prompt from tripping client idle watchdogs (Copilot/OpenCLAW abort with no output after
+  ~120s), the streaming tool path runs generation in a background thread and emits SSE
+  keep-alive pings every `HEARTBEAT_SECS` (`_sse_tool_stream`); the plain stream path
+  (`stream_llm`) pings the same way during a long prefill. True token streaming on tool turns
+  (stream until a tool-call prefix appears) is still TODO.
+- Big agent prompts (OpenCLAW ships ~21k-token system prompts) prefill slowly on weak iGPUs
+  (~6 min TTFT on the desktop 285K Xe-LPG). Mitigations: smaller coder model, CPU on strong
+  desktops, trimming the client's tool set, and the keep-alive above so turns complete instead
+  of aborting. OpenVINO can't cancel a blocked prefill, so an aborted client leaves the
+  generation churning — another reason to keep clients connected via heartbeat.
 
 ## Verified models
 
