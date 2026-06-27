@@ -49,6 +49,7 @@ instantly, no conversion), and returning users see them flagged
 - **VLM support** — send images via base64 or `file://` URIs for vision models
 - **Streaming** — token-by-token for text chat, with collapsible thinking blocks
 - **Dual device** — NPU for chat + GPU for vision, simultaneously
+- **Tool calling / agents** (GPU only) — works with VS Code Copilot Chat and OpenCLAW; the model drives tools on the ARC GPU
 - **Built-in web UI** — chat, image drop zone, model selector, dark theme
 - **Model menu** — curated list of verified models, no conversion nightmares
 
@@ -280,6 +281,14 @@ python nollama.py --port 9000
 # Change the default idle-unload timeout (default is 1800 = 30 min)
 python nollama.py --idle-timeout 600     # unload after 10 min idle
 python nollama.py --idle-timeout 0       # never unload — keep models loaded forever
+
+# Log every inbound API request (method, path, User-Agent, body) — handy when
+# wiring up a new agent client and you need to see exactly what it sends
+python nollama.py --debug
+
+# Report a real Ollama version on /api/version so VS Code's Ollama client
+# accepts the server (needed for VS Code Copilot Chat in Ollama mode)
+python nollama.py --vscode-compat
 ```
 
 ### Idle unload
@@ -404,6 +413,38 @@ OpenWebUI can connect via either API:
 | Field | Value |
 |---|---|
 | Ollama Base URL | `http://host.docker.internal:11434` |
+
+## Agent tools & coding assistants (VS Code Copilot, OpenCLAW)
+
+NoLlama can drive tool-calling coding agents — the model emits function calls,
+NoLlama parses them into OpenAI/Ollama `tool_calls`, and the agent acts on the
+results.
+
+> **Tool calling is GPU/iGPU-only.** Small NPU-class models can't reliably drive
+> multi-step agent loops, and tool turns are buffered (not token-streamed), so
+> NoLlama only honors `tools` when a **GPU** slot serves the request — on NPU/CPU
+> it ignores `tools` and answers as plain chat. `/api/show` only advertises the
+> `tools` capability for GPU slots. Load a GPU LLM (a coder model such as the
+> Qwen2.5-Coder GPU builds in the menu works well).
+
+The tool prompt is rendered in Qwen3-Coder native format, and `parse_tool_calls`
+also understands Hermes, Mistral `[TOOL_CALLS]`, Llama `<|python_tag|>`, DeepSeek,
+and bare-JSON outputs — so most instruct/coder models work.
+
+**VS Code Copilot Chat** (0.53+) — point it at the Ollama API and start the
+server with `--vscode-compat` so VS Code accepts the version handshake:
+
+```powershell
+python nollama.py --gpu-model-dir gpu-coder-model --vscode-compat
+```
+
+Then in VS Code set the Ollama base URL to `http://localhost:11434` and pick the
+GPU model. (Add `--debug` while wiring it up to see exactly what Copilot sends.)
+
+**OpenCLAW** — speaks the OpenAI chat-completions API NoLlama already serves; it
+runs against a NoLlama GPU slot with no code changes, just config. See
+[OPENCLAW-PLAN.md](OPENCLAW-PLAN.md) for the step-by-step setup (the one gotcha:
+address the model as `<name>@GPU` so tool requests hit the GPU, not the NPU).
 
 ## Models
 
