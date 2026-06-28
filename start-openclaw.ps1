@@ -15,8 +15,8 @@
 
 param(
     [string]$ModelDir = (Join-Path $env:USERPROFILE "models\Qwen2.5-Coder-7B-Instruct-int4-ov"),
-    [ValidateSet("CPU", "GPU")]
-    [string]$Device   = "CPU",
+    [ValidateSet("Auto", "CPU", "GPU")]
+    [string]$Device   = "Auto",   # Auto: prefer a real Intel GPU, else CPU
     [int]$Port        = 8000,
     [string]$Prewarm  = "prewarm.json",   # prefix-cache pre-warm file (auto-captured on first big prompt)
     [string]$Openclaw = "chat",           # openclaw subcommand to run once NoLlama is ready
@@ -29,6 +29,7 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $VenvBin   = if ($IsWindows) { "Scripts" } else { "bin" }
 $NoLlama   = Join-Path $ScriptDir "nollama.py"
+$PyExe     = Join-Path $ScriptDir "venv" $VenvBin ($(if ($IsWindows) { "python.exe" } else { "python" }))
 if (-not [System.IO.Path]::IsPathRooted($Prewarm)) { $Prewarm = Join-Path $ScriptDir $Prewarm }
 
 $ApiBase   = "http://localhost:$Port"
@@ -41,6 +42,20 @@ foreach ($sfx in '-ov', '-openvino', '-int8', '-int4') {
 
 function Get-Health {
     try { return Invoke-RestMethod -Uri "$ApiBase/health" -TimeoutSec 3 } catch { return $null }
+}
+
+# Resolve "Auto": prefer a real Intel GPU, else CPU (tools run on GPU/CPU, never
+# the NPU). Uses OpenVINO's own device list — the same source NoLlama uses.
+function Resolve-Device {
+    param([string]$Requested)
+    if ($Requested -ne "Auto") { return $Requested }
+    if (Test-Path $PyExe) {
+        try {
+            $d = (& $PyExe -c "import openvino as ov; print('GPU' if 'GPU' in ov.Core().available_devices else 'CPU')" 2>$null | Select-Object -Last 1)
+            if ("$d".Trim() -eq "GPU") { return "GPU" }
+        } catch {}
+    }
+    return "CPU"
 }
 
 # A running NoLlama is usable for OpenCLAW only if prefix caching is on AND there's
@@ -77,9 +92,8 @@ function Stop-NoLlamaOnPort {
 function Start-NoLlama {
     $LogFile = Join-Path $ScriptDir "nollama-openclaw.log"
     $ErrFile = "$LogFile.err"
-    $pyExe = Join-Path $ScriptDir "venv" $VenvBin ($(if ($IsWindows) { "python.exe" } else { "python" }))
-    if (-not (Test-Path $pyExe)) {
-        Write-Host "venv python not found at $pyExe - run install.ps1 first." -ForegroundColor Red
+    if (-not (Test-Path $PyExe)) {
+        Write-Host "venv python not found at $PyExe - run install.ps1 first." -ForegroundColor Red
         exit 1
     }
     $pyArgs = @($NoLlama, "--model-dir", $ModelDir, "--device", $Device,
@@ -89,7 +103,7 @@ function Start-NoLlama {
     # Start-Process (not Start-Job): a job spins a child PowerShell runspace, which
     # fails on locked-down machines (ConstrainedLanguage / AppLocker / WDAC) with a
     # language-mode mismatch. A plain process launch of the venv python avoids that.
-    $proc = Start-Process -FilePath $pyExe -ArgumentList $pyArgs -PassThru `
+    $proc = Start-Process -FilePath $PyExe -ArgumentList $pyArgs -PassThru `
         -WindowStyle Hidden -RedirectStandardOutput $LogFile -RedirectStandardError $ErrFile
 
     Write-Host -NoNewline "  waiting for ready"
@@ -153,6 +167,9 @@ function Test-NollamaProvider {
 }
 
 # --- main ---------------------------------------------------------------------
+$Device = Resolve-Device $Device
+Write-Host "Device: $Device" -ForegroundColor DarkGray
+
 if ($Setup) {
     Invoke-Setup
 } elseif (-not (Test-NollamaProvider)) {
@@ -190,10 +207,14 @@ if ($health) {
 }
 
 try {
-    if ($Warmup) {
-        # One throwaway agent turn: NoLlama captures the big prompt to prewarm.json
-        # AND warms the live KV cache, so the real session's first turn is fast too.
-        Write-Host "Warming up (one throwaway turn -> builds prewarm.json + warms cache)..." -ForegroundColor Cyan
+    # When prewarm.json already exists, NoLlama prefilled it at startup (--prewarm),
+    # so the cache is already warm — a -Warmup throwaway turn would be redundant.
+    # -Warmup only does work when the file is MISSING: one throwaway turn builds it
+    # (and warms the live cache) so even the first real turn is fast.
+    if (Test-Path $Prewarm) {
+        Write-Host "prewarm.json present - NoLlama pre-warmed the cache at startup; first turn is already fast." -ForegroundColor DarkGray
+    } elseif ($Warmup) {
+        Write-Host "No prewarm.json yet - warming up (one throwaway turn builds it + warms the cache)..." -ForegroundColor Cyan
         & openclaw agent --local --session-id _warmup --message "Reply with exactly: ok" --timeout 600 2>&1 |
             Select-Object -Last 2
         Write-Host "Warmup done." -ForegroundColor Green
