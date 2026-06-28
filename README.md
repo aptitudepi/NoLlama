@@ -50,6 +50,7 @@ instantly, no conversion), and returning users see them flagged
 - **Streaming** — token-by-token for text chat, with collapsible thinking blocks
 - **Dual device** — NPU for chat + GPU for vision, simultaneously
 - **Tool calling / agents** (GPU/iGPU + CPU, not NPU) — works with VS Code Copilot Chat and OpenCLAW; the model drives tools on the ARC GPU or a strong CPU
+- **Prefix caching** (on by default) — a repeated prompt prefix (e.g. an agent's fixed system prompt) is prefilled once, not every turn — ~47× faster on cached turns
 - **Built-in web UI** — chat, image drop zone, model selector, dark theme
 - **Model menu** — curated list of verified models, no conversion nightmares
 
@@ -289,6 +290,12 @@ python nollama.py --debug
 # Report a real Ollama version on /api/version so VS Code's Ollama client
 # accepts the server (needed for VS Code Copilot Chat in Ollama mode)
 python nollama.py --vscode-compat
+
+# Prefix (KV) caching is ON by default for GPU/CPU LLM slots — a repeated prompt
+# prefix is prefilled once, not every turn (big win for agent loops, ~47x on a
+# cached turn). Tune the pool size, or disable it:
+python nollama.py --cache-size-gb 4     # larger KV-cache pool (default 2 GB)
+python nollama.py --no-prompt-cache     # disable prefix caching
 ```
 
 ### Idle unload
@@ -432,7 +439,10 @@ results.
 > `tool_calls` are sent), but the server emits SSE keep-alive pings during a long
 > prefill so agent clients (Copilot/OpenCLAW) don't hit their idle timeout and
 > abort. Big agent system prompts (~20k tokens) prefill slowly on weak iGPUs — a
-> smaller model, the CPU, or trimming the client's tool set all help.
+> smaller model, the CPU, or trimming the client's tool set all help. And
+> **prefix caching is on by default**, so that big system prompt is prefilled
+> once, not every turn — after the first turn, agent turns are fast (~47x on the
+> cached prefix). Disable with `--no-prompt-cache`.
 
 The tool prompt is rendered in Qwen3-Coder native format, and `parse_tool_calls`
 also understands Hermes, Mistral `[TOOL_CALLS]`, Llama `<|python_tag|>`, DeepSeek,

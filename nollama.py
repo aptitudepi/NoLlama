@@ -599,6 +599,25 @@ class DeviceSlot:
                     str(model_dir), device=self.device_id,
                     MAX_PROMPT_LEN=4096,
                 )
+            elif PROMPT_CACHE:
+                # GPU/CPU: enable prefix (KV) caching via the continuous-batching
+                # backend so a repeated prompt prefix — e.g. an agent's fixed
+                # system prompt + tool schemas, identical every turn — is
+                # prefilled once instead of every turn. Auto-invalidated by any
+                # prefix change (no staleness). Opt out with --no-prompt-cache.
+                try:
+                    sc = ovg.SchedulerConfig()
+                    sc.enable_prefix_caching = True
+                    sc.cache_size = PROMPT_CACHE_GB
+                    self.pipe = ovg.LLMPipeline(
+                        str(model_dir), device=self.device_id, scheduler_config=sc,
+                    )
+                    print(f"  [{self.device_name}] prefix caching on "
+                          f"({PROMPT_CACHE_GB} GB KV pool)", flush=True)
+                except Exception as e:
+                    print(f"  [{self.device_name}] prefix caching unavailable "
+                          f"({e}); using plain pipeline", flush=True)
+                    self.pipe = ovg.LLMPipeline(str(model_dir), device=self.device_id)
             else:
                 self.pipe = ovg.LLMPipeline(str(model_dir), device=self.device_id)
 
@@ -964,6 +983,8 @@ class WhisperSlot:
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MAX_REQUEST_BYTES = 50 * 1024 * 1024  # 50 MB — enough for large base64 images
 HEARTBEAT_SECS = 15  # SSE keep-alive cadence during long prefill (big prompts / tool turns)
+PROMPT_CACHE = True   # prefix-KV caching on GPU/CPU LLM slots (set False via --no-prompt-cache)
+PROMPT_CACHE_GB = 2   # KV-cache pool size (GB) when prefix caching is on
 
 app = Flask("NoLlama",
             template_folder=os.path.join(SCRIPT_DIR, "templates"),
@@ -2051,17 +2072,27 @@ def parse_args():
     p.add_argument("--vscode-compat", action="store_true",
                    help=f"Report a real Ollama version ({VSCODE_OLLAMA_VERSION}) on "
                         f"/api/version so VS Code's Ollama client accepts the server")
+    p.add_argument("--no-prompt-cache", action="store_true",
+                   help="Disable prefix (KV) caching on GPU/CPU LLM slots. Caching is "
+                        "ON by default — it prefills a repeated prompt prefix (e.g. an "
+                        "agent's fixed system prompt) once instead of every turn.")
+    p.add_argument("--cache-size-gb", type=int, default=PROMPT_CACHE_GB,
+                   help=f"KV-cache pool size in GB when prefix caching is on "
+                        f"(default: {PROMPT_CACHE_GB})")
     return p.parse_args()
 
 
 def main():
     global primary, secondary, whisper_slot, max_dim, debug, vscode_compat
+    global PROMPT_CACHE, PROMPT_CACHE_GB
 
     args = parse_args()
     model_dir = os.path.expanduser(args.model_dir)
     max_dim = args.max_dim
     debug = args.debug
     vscode_compat = args.vscode_compat
+    PROMPT_CACHE = not args.no_prompt_cache
+    PROMPT_CACHE_GB = args.cache_size_gb
 
     # Quiet Flask/Werkzeug startup noise: kills the "Serving Flask app" /
     # "Debug mode: off" / "Running on http://..." / "Press CTRL+C to quit"

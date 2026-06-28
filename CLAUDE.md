@@ -7,6 +7,15 @@ OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
 - `nollama.py` — Flask server, DeviceSlot class per device, auto-detects VLM/LLM from config.json
 - NPU: LLMPipeline with MAX_PROMPT_LEN=4096, streaming via SSE
 - GPU: VLMPipeline (images) or LLMPipeline (text). Both stream as of openvino-genai 2026.1 — verified on Arc 140V iGPU.
+- Prefix (KV) caching: **default on** for GPU/CPU **LLM** slots — they load via the
+  continuous-batching backend (`LLMPipeline(..., scheduler_config=SchedulerConfig(
+  enable_prefix_caching=True, cache_size=PROMPT_CACHE_GB))`). A repeated prompt prefix (an
+  agent's fixed system prompt + tool schemas, identical every turn) is prefilled once, not
+  every turn — measured ~47× faster on a cached turn (24.4s→0.5s for a ~2k-token prefix on
+  the 285K CPU). Auto-invalidated by any prefix change (no staleness). `--no-prompt-cache`
+  disables it; `--cache-size-gb N` sizes the pool (default 2). NPU and VLM slots keep the
+  plain pipeline (NPU has no CB path; it keeps MAX_PROMPT_LEN). Falls back to the plain
+  pipeline with a warning if a device can't build the CB backend.
 - Whisper: WhisperSlot + WhisperPipeline for STT, `POST /v1/audio/transcriptions`, CPU or GPU
 - OpenVINO GenAI may unify VLM/LLMPipeline — when that happens, simplify the dual-pipeline routing
 - Routing: images go to GPU, text goes to NPU (or GPU if no NPU)
