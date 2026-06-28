@@ -468,6 +468,11 @@ runs against a NoLlama GPU slot with no code changes, just config. See
 [OPENCLAW-PLAN.md](OPENCLAW-PLAN.md) for the step-by-step setup (the one gotcha:
 address the model as `<name>@GPU` so tool requests hit the GPU, not the NPU).
 
+Once configured, **`start-openclaw.ps1`** launches both together (the NoLlama
+equivalent of `ollama launch openclaw`): it starts NoLlama with the agent flags
+(`--device`, `--prewarm`, keep-loaded), waits for it to be ready, then runs
+OpenCLAW. Reuses a NoLlama already on the port. E.g. `./start-openclaw.ps1 -Device GPU`.
+
 ## Models
 
 `install.ps1` shows a curated menu of models known to work on Intel
@@ -609,6 +614,7 @@ install.ps1             Setup wizard
 download-model.ps1      Download/convert any HuggingFace model
 benchmark.py            Device performance benchmark
 start.ps1               Auto-generated launcher (after install)
+start-openclaw.ps1      Launch NoLlama (caching + pre-warm) + OpenCLAW together
 models.json             Curated model registry
 model/                  Primary model (NPU or GPU)
 gpu-model/              Secondary GPU model (dual mode)

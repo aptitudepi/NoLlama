@@ -138,9 +138,12 @@ Give it a task that forces a tool call ("list the files in this folder", "read
 README.md"). Success = OpenCLAW invokes a tool, NoLlama logs a tool turn on the
 `[GPU]` slot, OpenCLAW acts on the result.
 
-Optional convenience: a `launch-openclaw.ps1` that checks NoLlama is up on :8000,
-ensures the provider block exists in `openclaw.json`, then runs `openclaw` — the
-NoLlama equivalent of `ollama launch openclaw`. (Not built yet; trivial follow-up.)
+Convenience launcher: **`start-openclaw.ps1`** (built) — the NoLlama equivalent of
+`ollama launch openclaw`. It reuses a NoLlama already on the port, or starts one with the
+agent flags (`--device`, `--idle-timeout 0`, `--prewarm`), waits for it to be ready, then
+runs `openclaw`. Params: `-ModelDir`, `-Device CPU|GPU`, `-Port`, `-Prewarm`, `-Openclaw`.
+The prefix-cache pre-fill itself is internal to NoLlama (`--prewarm`); the script just wires
+NoLlama + OpenCLAW together.
 
 ---
 
