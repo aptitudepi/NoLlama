@@ -28,7 +28,6 @@ param(
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $VenvBin   = if ($IsWindows) { "Scripts" } else { "bin" }
-$Activate  = Join-Path $ScriptDir "venv" $VenvBin "Activate.ps1"
 $NoLlama   = Join-Path $ScriptDir "nollama.py"
 if (-not [System.IO.Path]::IsPathRooted($Prewarm)) { $Prewarm = Join-Path $ScriptDir $Prewarm }
 
@@ -77,26 +76,34 @@ function Stop-NoLlamaOnPort {
 
 function Start-NoLlama {
     $LogFile = Join-Path $ScriptDir "nollama-openclaw.log"
+    $ErrFile = "$LogFile.err"
+    $pyExe = Join-Path $ScriptDir "venv" $VenvBin ($(if ($IsWindows) { "python.exe" } else { "python" }))
+    if (-not (Test-Path $pyExe)) {
+        Write-Host "venv python not found at $pyExe - run install.ps1 first." -ForegroundColor Red
+        exit 1
+    }
+    $pyArgs = @($NoLlama, "--model-dir", $ModelDir, "--device", $Device,
+                "--port", "$Port", "--idle-timeout", "0", "--prewarm", $Prewarm)
     Write-Host "Starting NoLlama ($Device, $ModelName) on :$Port" -ForegroundColor Cyan
     Write-Host "  logs -> $LogFile" -ForegroundColor DarkGray
-    $job = Start-Job -ScriptBlock {
-        param($act, $py, $md, $dev, $port, $pw, $log)
-        & $act
-        & python $py --model-dir $md --device $dev --port $port --idle-timeout 0 --prewarm $pw *>&1 |
-            Tee-Object -FilePath $log
-    } -ArgumentList $Activate, $NoLlama, $ModelDir, $Device, $Port, $Prewarm, $LogFile
+    # Start-Process (not Start-Job): a job spins a child PowerShell runspace, which
+    # fails on locked-down machines (ConstrainedLanguage / AppLocker / WDAC) with a
+    # language-mode mismatch. A plain process launch of the venv python avoids that.
+    $proc = Start-Process -FilePath $pyExe -ArgumentList $pyArgs -PassThru `
+        -WindowStyle Hidden -RedirectStandardOutput $LogFile -RedirectStandardError $ErrFile
 
     Write-Host -NoNewline "  waiting for ready"
     foreach ($i in 1..150) {            # up to ~5 min (cold load + pre-warm on a slow box)
         Start-Sleep -Seconds 2
-        if (Get-Health) { Write-Host ""; Write-Host "NoLlama ready." -ForegroundColor Green; return $job }
-        if ($job.State -in @("Failed", "Completed")) { break }
+        if (Get-Health) { Write-Host ""; Write-Host "NoLlama ready." -ForegroundColor Green; return $proc }
+        if ($proc.HasExited) { break }
         Write-Host -NoNewline "."
     }
     Write-Host ""
-    Write-Host "NoLlama did not come up — last log lines:" -ForegroundColor Red
-    Receive-Job $job -ErrorAction SilentlyContinue | Select-Object -Last 25
-    Stop-Job $job -ErrorAction SilentlyContinue; Remove-Job $job -Force -ErrorAction SilentlyContinue
+    Write-Host "NoLlama did not come up - last log lines:" -ForegroundColor Red
+    if (Test-Path $LogFile) { Get-Content $LogFile -Tail 20 -ErrorAction SilentlyContinue }
+    if (Test-Path $ErrFile) { Get-Content $ErrFile -Tail 10 -ErrorAction SilentlyContinue }
+    if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
     exit 1
 }
 
@@ -185,8 +192,7 @@ try {
 finally {
     if ($ownServer -and $server) {
         Write-Host "Stopping NoLlama..." -ForegroundColor Cyan
-        Stop-Job $server -ErrorAction SilentlyContinue
-        Remove-Job $server -Force -ErrorAction SilentlyContinue
+        if (-not $server.HasExited) { Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue }
     } elseif ($health) {
         Write-Host "Left the existing NoLlama running." -ForegroundColor DarkGray
     }
