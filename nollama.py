@@ -815,12 +815,20 @@ class DeviceSlot:
                     token = token_queue.get(timeout=HEARTBEAT_SECS)
                 except Empty:
                     # No token yet — likely a long prefill on a big prompt.
-                    # Emit an SSE comment to keep the connection alive so the
-                    # client's idle watchdog doesn't abort; the background
-                    # thread delivers tokens (or the None sentinel) when ready.
+                    # Emit an empty-content delta to keep the client's idle
+                    # watchdog from aborting (a real chunk resets content-based
+                    # watchdogs, not just byte-based ones; empty string is a
+                    # no-op for assembly). The background thread delivers tokens
+                    # or the None sentinel when ready.
                     if not t.is_alive():
                         break
-                    yield ": ping\n\n"
+                    ka = {
+                        "id": completion_id, "object": "chat.completion.chunk",
+                        "created": created, "model": self.model_name,
+                        "choices": [{"index": 0, "delta": {"content": ""},
+                                     "finish_reason": None}],
+                    }
+                    yield f"data: {json.dumps(ka)}\n\n"
                     continue
                 if token is None:
                     break
@@ -1055,7 +1063,14 @@ def _sse_tool_stream(slot, raw_messages, gen, tools, completion_id, created, t0)
     while th.is_alive():
         th.join(timeout=HEARTBEAT_SECS)
         if th.is_alive():
-            yield ": ping\n\n"
+            # Empty-content keep-alive (resets content- and byte-based client
+            # watchdogs alike; empty string is a no-op for message assembly).
+            yield ("data: " + json.dumps({
+                "id": completion_id, "object": "chat.completion.chunk",
+                "created": created, "model": slot.model_name,
+                "choices": [{"index": 0, "delta": {"content": ""},
+                             "finish_reason": None}],
+            }) + "\n\n")
 
     elapsed = time.perf_counter() - t0
     if result.get("error") is not None:
