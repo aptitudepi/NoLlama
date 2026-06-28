@@ -985,6 +985,9 @@ MAX_REQUEST_BYTES = 50 * 1024 * 1024  # 50 MB — enough for large base64 images
 HEARTBEAT_SECS = 15  # SSE keep-alive cadence during long prefill (big prompts / tool turns)
 PROMPT_CACHE = True   # prefix-KV caching on GPU/CPU LLM slots (set False via --no-prompt-cache)
 PROMPT_CACHE_GB = 2   # KV-cache pool size (GB) when prefix caching is on
+PREWARM_FILE = None   # path (--prewarm) to a saved prompt: prefilled at startup, auto-captured while serving
+PREWARM_MIN_CHARS = 4000  # only pre-warm/capture big (agent-sized) system prompts, not plain chat
+_prewarm_hash = None  # debounce: only re-capture when the system prompt changes
 
 app = Flask("NoLlama",
             template_folder=os.path.join(SCRIPT_DIR, "templates"),
@@ -1176,6 +1179,66 @@ def _tools_supported(slot):
     _sse_tool_stream) so a slow prefill doesn't trip the client's watchdog.
     """
     return bool(slot) and slot.device_name in ("GPU", "CPU")
+
+
+def _maybe_capture_prewarm(raw_messages):
+    """Save a big (agent) prompt to PREWARM_FILE so the next startup can warm
+    the prefix cache. Debounced on the system prompt — written once per distinct
+    system prompt, not every turn. Stale-safe: if the agent's prompt later
+    changes, a fresh request overwrites the file; a mismatch only costs a cold
+    first turn, never a wrong answer.
+    """
+    if not PREWARM_FILE or not raw_messages:
+        return
+    sys_text = "".join(str(m.get("content", "")) for m in raw_messages
+                       if m.get("role") == "system")
+    if len(sys_text) < PREWARM_MIN_CHARS:
+        return
+    global _prewarm_hash
+    h = hash(sys_text)
+    if h == _prewarm_hash:
+        return
+    # Save system + the first user turn — enough to cache the shared prefix.
+    to_save = []
+    for m in raw_messages:
+        to_save.append({"role": m.get("role", "user"), "content": m.get("content", "")})
+        if m.get("role") == "user":
+            break
+    try:
+        with open(PREWARM_FILE, "w", encoding="utf-8") as f:
+            json.dump(to_save, f)
+        _prewarm_hash = h
+    except OSError:
+        pass
+
+
+def _prewarm_slot(slot):
+    """Prefill the saved prompt at startup so the first real (cold) turn is a
+    cache hit. Only meaningful on a GPU/CPU LLM slot with prefix caching on.
+    """
+    if not (PREWARM_FILE and PROMPT_CACHE and slot.model_type == "llm"
+            and slot.device_name in ("GPU", "CPU")):
+        return
+    if not os.path.isfile(PREWARM_FILE):
+        return
+    try:
+        with open(PREWARM_FILE, encoding="utf-8") as f:
+            raw_messages = json.load(f)
+    except (OSError, ValueError):
+        return
+    if not raw_messages:
+        return
+    try:
+        gen = ovg.GenerationConfig()
+        gen.max_new_tokens = 1
+        gen.do_sample = False
+        t0 = time.perf_counter()
+        slot.generate_llm(raw_messages, gen)  # prefills -> populates prefix cache
+        print(f"  [{slot.device_name}] pre-warmed prompt cache from "
+              f"{os.path.basename(PREWARM_FILE)} ({time.perf_counter() - t0:.1f}s)",
+              flush=True)
+    except Exception as e:
+        print(f"  [{slot.device_name}] pre-warm failed: {e}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1415,6 +1478,10 @@ def chat_completions():
         resp.headers["X-Device"] = slot.device_name
         resp.headers["X-Model"] = slot.model_name
         return resp
+
+    # Capture a big agent prompt so the next startup can pre-warm it (no-op
+    # unless --prewarm is set).
+    _maybe_capture_prewarm(raw_messages)
 
     # --- LLM path ---
     if stream and not tools_active:
@@ -2001,6 +2068,7 @@ def _load_in_background(slot, model_dir, devices, port, ollama_port, banner_slot
         slot.device_full = devices.get(slot.device_name, {}).get("name", slot.device_name)
         slot.load(model_dir)
         slot.warmup()
+        _prewarm_slot(slot)
     except Exception as e:
         slot.status = "error"
         print(f"\n  [{slot.device_name}] ERROR: Failed to load model: {e}")
@@ -2079,12 +2147,16 @@ def parse_args():
     p.add_argument("--cache-size-gb", type=int, default=PROMPT_CACHE_GB,
                    help=f"KV-cache pool size in GB when prefix caching is on "
                         f"(default: {PROMPT_CACHE_GB})")
+    p.add_argument("--prewarm", default=None, metavar="FILE",
+                   help="Prefill a saved agent prompt at startup so the first turn is a "
+                        "cache hit (no cold-prefill stall). The file auto-populates from the "
+                        "first big prompt served, so: run once, then restart with --prewarm.")
     return p.parse_args()
 
 
 def main():
     global primary, secondary, whisper_slot, max_dim, debug, vscode_compat
-    global PROMPT_CACHE, PROMPT_CACHE_GB
+    global PROMPT_CACHE, PROMPT_CACHE_GB, PREWARM_FILE
 
     args = parse_args()
     model_dir = os.path.expanduser(args.model_dir)
@@ -2093,6 +2165,7 @@ def main():
     vscode_compat = args.vscode_compat
     PROMPT_CACHE = not args.no_prompt_cache
     PROMPT_CACHE_GB = args.cache_size_gb
+    PREWARM_FILE = os.path.expanduser(args.prewarm) if args.prewarm else None
 
     # Quiet Flask/Werkzeug startup noise: kills the "Serving Flask app" /
     # "Debug mode: off" / "Running on http://..." / "Press CTRL+C to quit"

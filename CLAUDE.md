@@ -15,7 +15,10 @@ OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
   the 285K CPU). Auto-invalidated by any prefix change (no staleness). `--no-prompt-cache`
   disables it; `--cache-size-gb N` sizes the pool (default 2). NPU and VLM slots keep the
   plain pipeline (NPU has no CB path; it keeps MAX_PROMPT_LEN). Falls back to the plain
-  pipeline with a warning if a device can't build the CB backend.
+  pipeline with a warning if a device can't build the CB backend. `--prewarm <file>`
+  prefills a saved agent prompt at startup (the file auto-captures the first big prompt
+  served via `_maybe_capture_prewarm`, so: run once → restart with `--prewarm`) so even the
+  first turn is a cache hit instead of a cold prefill that can trip a client's idle watchdog.
 - Whisper: WhisperSlot + WhisperPipeline for STT, `POST /v1/audio/transcriptions`, CPU or GPU
 - OpenVINO GenAI may unify VLM/LLMPipeline — when that happens, simplify the dual-pipeline routing
 - Routing: images go to GPU, text goes to NPU (or GPU if no NPU)

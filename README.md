@@ -296,6 +296,11 @@ python nollama.py --vscode-compat
 # cached turn). Tune the pool size, or disable it:
 python nollama.py --cache-size-gb 4     # larger KV-cache pool (default 2 GB)
 python nollama.py --no-prompt-cache     # disable prefix caching
+
+# Pre-warm the cache at startup so the FIRST agent turn is fast too (not just
+# turn 2+). The file auto-populates from the first big prompt served, so the
+# workflow is: run once, then restart with --prewarm to skip the cold prefill.
+python nollama.py --prewarm prewarm.json
 ```
 
 ### Idle unload
