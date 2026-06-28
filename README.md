@@ -440,6 +440,9 @@ NoLlama can drive tool-calling coding agents — the model emits function calls,
 NoLlama parses them into OpenAI/Ollama `tool_calls`, and the agent acts on the
 results.
 
+![OpenClaw running locally against NoLlama on an Intel iGPU — start-openclaw.ps1 brings up NoLlama (GPU, Qwen2.5-Coder-7B), pre-warms the cache, and the agent replies](screenshots/openclaw-1-Skjermbilde2026-06-28_113203.png)
+*OpenClaw driving a local Qwen2.5-Coder model on an Intel iGPU via NoLlama — one command (`./start-openclaw.ps1`), no cloud, no NVIDIA.*
+
 > **Tool calling runs on GPU/iGPU and CPU — not the NPU.** The NPU has a hard
 > prompt cap and small NPU-class models can't reliably drive agent loops, so
 > NoLlama ignores `tools` there and answers as plain chat; `/api/show` advertises
