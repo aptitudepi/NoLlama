@@ -20,7 +20,8 @@ param(
     [int]$Port        = 8000,
     [string]$Prewarm  = "prewarm.json",   # prefix-cache pre-warm file (auto-captured on first big prompt)
     [string]$Openclaw = "chat",           # openclaw subcommand to run once NoLlama is ready
-    [switch]$Setup,                        # (re)write OpenCLAW's `nollama` provider config, then continue
+    [switch]$Setup,                        # (re)write OpenCLAW's NoLlama config (provider + coding profile), then continue
+    [switch]$Warmup,                       # fire one throwaway turn first to build prewarm.json + warm the cache
     [switch]$Force                         # if a running NoLlama is unsuitable, stop+restart it without prompting
 )
 
@@ -106,7 +107,11 @@ function Invoke-Setup {
         Write-Host "  openclaw onboard --install-daemon" -ForegroundColor Yellow
         exit 1
     }
-    Write-Host "Configuring OpenCLAW provider 'nollama' -> $ApiBase/v1 ($ModelName)" -ForegroundColor Cyan
+    # Self-healing config: provider + default model + a coding-agent-friendly tool
+    # set. Re-runnable any time (idempotent) to restore our settings — npm package
+    # updates don't touch ~/.openclaw/openclaw.json, but re-onboarding might, so
+    # this is the recovery path.
+    Write-Host "Configuring OpenCLAW for NoLlama ($ApiBase/v1, $ModelName, coding profile)" -ForegroundColor Cyan
     $patch = @"
 {
   models: { providers: { nollama: {
@@ -116,7 +121,15 @@ function Invoke-Setup {
     timeoutSeconds: 600,
     models: [ { id: "$ModelName", name: "NoLlama $ModelName ($Device)", contextWindow: 32768, maxTokens: 8192 } ],
   }}},
-  agents: { defaults: { model: { primary: "nollama/$ModelName" } } },
+  agents: { defaults: {
+    model: { primary: "nollama/$ModelName" },
+    memorySearch: { enabled: false },
+    startupContext: { enabled: false },
+  }},
+  tools: {
+    profile: "coding",
+    web: { search: { enabled: false }, x_search: { enabled: false } },
+  },
 }
 "@
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "nollama-provider.patch.json5"
@@ -158,6 +171,14 @@ if ($health) {
 }
 
 try {
+    if ($Warmup) {
+        # One throwaway agent turn: NoLlama captures the big prompt to prewarm.json
+        # AND warms the live KV cache, so the real session's first turn is fast too.
+        Write-Host "Warming up (one throwaway turn -> builds prewarm.json + warms cache)..." -ForegroundColor Cyan
+        & openclaw agent --local --session-id _warmup --message "Reply with exactly: ok" --timeout 600 2>&1 |
+            Select-Object -Last 2
+        Write-Host "Warmup done." -ForegroundColor Green
+    }
     Write-Host "Launching OpenCLAW ($Openclaw)..." -ForegroundColor Green
     & openclaw $Openclaw
 }

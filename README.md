@@ -487,8 +487,20 @@ It starts NoLlama with the agent flags (`--device`, `--prewarm`, keep-loaded),
 waits until ready, then runs OpenCLAW. If a NoLlama is **already** on the port it
 **verifies** it (prefix caching on + a tool-capable GPU/CPU slot) and reuses it —
 or, if it's misconfigured, tells you why and offers to restart it correctly
-(`-Force` to skip the prompt). `-Setup` (re)writes OpenCLAW's `nollama` provider
-so it points at this server.
+(`-Force` to skip the prompt). `-Warmup` fires one throwaway turn first so even
+the first real turn is fast.
+
+> **NoLlama runs OpenCLAW in a deliberately constrained mode — by design.** A
+> coding-agent prompt is large (~21k tokens of system prompt + tool schemas), which
+> is a lot for a small local model on weak Intel hardware. So `-Setup` doesn't just
+> point OpenCLAW at NoLlama — it also **trims OpenCLAW** to fit: it selects the
+> `coding` tool profile and turns off web search, X search, memory search, and the
+> startup-context prelude. This shrinks the prompt and tool surface so a 7B coder on
+> an iGPU/CPU can actually drive the loop. It's all plain config in
+> `~/.openclaw/openclaw.json` — re-enable anything if your hardware can handle a
+> bigger prompt, and re-run `-Setup` to restore the trimmed defaults. Package
+> updates (`npm i -g openclaw@latest`) don't touch this config; only re-running
+> `openclaw onboard` might, in which case re-run `-Setup`.
 
 ## Models
 
