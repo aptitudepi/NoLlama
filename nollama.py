@@ -1060,7 +1060,7 @@ def _sse_tool_stream(slot, raw_messages, gen, tools, completion_id, created, t0)
     """Buffered tool turn, streamed with keep-alive frames.
 
     A tool turn must be fully generated before we can emit a structured
-    tool_calls delta — but prefilling a big agent prompt (e.g. an OpenCLAW
+    tool_calls delta — but prefilling a big agent prompt (e.g. an OpenClaw
     system prompt) on a small device can take minutes, longer than a client's
     idle watchdog. So run generation in a background thread and emit SSE pings
     until it finishes, then replay the parsed result. Without this the client

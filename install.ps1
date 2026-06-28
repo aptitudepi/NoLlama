@@ -8,7 +8,7 @@
 #
 # Detects available devices (NPU, GPU, CPU), then asks what you want to DO
 # (chat / coding agent / vision / combos) and places each model on the best
-# device. Coding-agent models (OpenCLAW / Copilot, tool-calling) and CPU are
+# device. Coding-agent models (OpenClaw / Copilot, tool-calling) and CPU are
 # first-class choices, not buried.
 #
 # -HfToken: a HuggingFace access token (https://huggingface.co/settings/tokens).
@@ -484,7 +484,7 @@ Write-Host "=== What will you use NoLlama for? ===" -ForegroundColor Cyan
 Write-Host ""
 $cases = @()
 $cases += [PSCustomObject]@{ Key = "chat";   Label = "Chat";         Desc = "text assistant" }
-$cases += [PSCustomObject]@{ Key = "agent";  Label = "Coding agent"; Desc = "OpenCLAW / VS Code Copilot (tool-calling)" }
+$cases += [PSCustomObject]@{ Key = "agent";  Label = "Coding agent"; Desc = "OpenClaw / VS Code Copilot (tool-calling)" }
 if ($HasGPU) {
     $cases += [PSCustomObject]@{ Key = "vision";      Label = "Vision";             Desc = "image understanding (GPU)" }
     $cases += [PSCustomObject]@{ Key = "chat+agent";  Label = "Chat + Coding agent"; Desc = "chat model + a GPU coder, together" }
@@ -505,7 +505,7 @@ while ($null -eq $useKey) {
 
 $chatDevices  = @(); if ($HasNPU) { $chatDevices += "NPU" }; if ($HasGPU) { $chatDevices += "GPU" }; $chatDevices += "CPU"
 $agentDevices = @(); if ($HasGPU) { $agentDevices += "GPU" }; $agentDevices += "CPU"
-$coders = @($Registry.gpu_llm | Where-Object { $_.agent })   # OpenCLAW/Copilot-ready
+$coders = @($Registry.gpu_llm | Where-Object { $_.agent })   # OpenClaw/Copilot-ready
 $isAgent = $false
 
 function Install-Primary { param($Sel, [string]$Device)
@@ -525,7 +525,7 @@ switch ($useKey) {
         $dev = Select-Device -Purpose "the coding agent" -Choices $agentDevices `
             -Note "GPU is usually faster; CPU often wins on strong desktops / weak iGPUs."
         $loc = @($LocalModels | Where-Object { $_.Type -eq "llm" })
-        $sel = Show-ModelMenu -Title "Coding agent model ($dev) - OpenCLAW / Copilot ready" -RegistryModels $coders -LocalModels $loc
+        $sel = Show-ModelMenu -Title "Coding agent model ($dev) - OpenClaw / Copilot ready" -RegistryModels $coders -LocalModels $loc
         if ($sel) { Install-Primary $sel $dev; $StartArgs += @("--prewarm", "prewarm.json", "--vscode-compat"); $isAgent = $true }
     }
     "vision" {
@@ -539,7 +539,7 @@ switch ($useKey) {
         if ($chatSel) {
             Install-Primary $chatSel $chatDev
             $cloc = @($LocalModels | Where-Object { $_.Type -eq "llm" -and $_.Name -ne $chatSel.Name })
-            $coderSel = Show-ModelMenu -Title "Coding agent model (GPU) - OpenCLAW / Copilot ready" -RegistryModels $coders -LocalModels $cloc -AllowSkip $true
+            $coderSel = Show-ModelMenu -Title "Coding agent model (GPU) - OpenClaw / Copilot ready" -RegistryModels $coders -LocalModels $cloc -AllowSkip $true
             if ($coderSel -and (Install-Model -Selected $coderSel -TargetDir $GpuModelDir)) {
                 $StartArgs += @("--gpu-model-dir", "gpu-model", "--prewarm", "prewarm.json", "--vscode-compat"); $isAgent = $true
             }
@@ -561,7 +561,7 @@ switch ($useKey) {
 
 if ($isAgent) {
     Write-Host ""
-    Write-Host "Coding agent ready. To drive it with OpenCLAW:" -ForegroundColor Green
+    Write-Host "Coding agent ready. To drive it with OpenClaw:" -ForegroundColor Green
     Write-Host "  npm install -g openclaw@latest      # once" -ForegroundColor DarkGray
     Write-Host "  openclaw onboard --install-daemon   # once" -ForegroundColor DarkGray
     Write-Host "  ./start-openclaw.ps1 -Setup -Warmup # configures + launches the agent" -ForegroundColor Yellow

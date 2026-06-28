@@ -10,7 +10,7 @@ discrete GPUs (A770, B580), or any Intel CPU. Automatically detects your
 hardware, picks the best device, and exposes both OpenAI and Ollama
 compatible APIs — so any client that speaks to either just works.
 
-**It drives coding agents, too.** VS Code Copilot Chat and OpenCLAW run against
+**It drives coding agents, too.** VS Code Copilot Chat and OpenClaw run against
 NoLlama with local **tool-calling** on your Intel GPU or CPU — no cloud, no
 NVIDIA. See [Agent tools & coding assistants](#agent-tools--coding-assistants-vs-code-copilot-openclaw).
 
@@ -43,7 +43,7 @@ Qwen3 8B is the best-quality text model verified on the NPU. Qwen3-VL 8B
 is the matching vision model — the INT8 build keeps fine detail (OCR,
 small numbers) and fits a 16 GB ARC; drop to the ~6 GB INT4 build
 (`…-int4-ov`) if you're tight on VRAM. For **coding agents** (VS Code Copilot
-Chat, OpenCLAW), pick the "Coding agent" use-case and a **Qwen2.5-Coder** model —
+Chat, OpenClaw), pick the "Coding agent" use-case and a **Qwen2.5-Coder** model —
 7B for snappy turns, 14B for stronger multi-step work; it runs on the GPU, or on
 the CPU (which beats a weak iGPU on strong desktops). All are pre-exported — **no
 conversion step**, though the multi-GB download still takes a while — and returning
@@ -57,7 +57,7 @@ users see them flagged **"Already on disk"** (those link instantly).
 - **VLM support** — send images via base64 or `file://` URIs for vision models
 - **Streaming** — token-by-token for text chat, with collapsible thinking blocks
 - **Dual device** — NPU for chat + GPU for vision, simultaneously
-- **Tool calling / agents** (GPU/iGPU + CPU, not NPU) — works with VS Code Copilot Chat and OpenCLAW; the model drives tools on the ARC GPU or a strong CPU
+- **Tool calling / agents** (GPU/iGPU + CPU, not NPU) — works with VS Code Copilot Chat and OpenClaw; the model drives tools on the ARC GPU or a strong CPU
 - **Prefix caching** (on by default) — a repeated prompt prefix (e.g. an agent's fixed system prompt) is prefilled once, not every turn — ~47× faster on cached turns
 - **Built-in web UI** — chat, image drop zone, model selector, dark theme
 - **Model menu** — curated list of verified models, no conversion nightmares
@@ -434,7 +434,7 @@ OpenWebUI can connect via either API:
 |---|---|
 | Ollama Base URL | `http://host.docker.internal:11434` |
 
-## Agent tools & coding assistants (VS Code Copilot, OpenCLAW)
+## Agent tools & coding assistants (VS Code Copilot, OpenClaw)
 
 NoLlama can drive tool-calling coding agents — the model emits function calls,
 NoLlama parses them into OpenAI/Ollama `tool_calls`, and the agent acts on the
@@ -450,7 +450,7 @@ results.
 >
 > Tool turns are **buffered** (the whole reply is generated before the structured
 > `tool_calls` are sent), but the server emits SSE keep-alive pings during a long
-> prefill so agent clients (Copilot/OpenCLAW) don't hit their idle timeout and
+> prefill so agent clients (Copilot/OpenClaw) don't hit their idle timeout and
 > abort. Big agent system prompts (~20k tokens) prefill slowly on weak iGPUs — a
 > smaller model, the CPU, or trimming the client's tool set all help. And
 > **prefix caching is on by default**, so that big system prompt is prefilled
@@ -471,12 +471,12 @@ python nollama.py --gpu-model-dir gpu-coder-model --vscode-compat
 Then in VS Code set the Ollama base URL to `http://localhost:11434` and pick the
 GPU model. (Add `--debug` while wiring it up to see exactly what Copilot sends.)
 
-**OpenCLAW** — speaks the OpenAI chat-completions API NoLlama already serves; it
+**OpenClaw** — speaks the OpenAI chat-completions API NoLlama already serves; it
 runs against a NoLlama GPU slot with no code changes, just config. See
 [OPENCLAW-PLAN.md](OPENCLAW-PLAN.md) for the step-by-step setup (the one gotcha:
 address the model as `<name>@GPU` so tool requests hit the GPU, not the NPU).
 
-**Install OpenCLAW** (once):
+**Install OpenClaw** (once):
 
 ```powershell
 npm install -g openclaw@latest
@@ -492,16 +492,16 @@ of `ollama launch openclaw`):
 ```
 
 It starts NoLlama with the agent flags (`--device`, `--prewarm`, keep-loaded),
-waits until ready, then runs OpenCLAW. If a NoLlama is **already** on the port it
+waits until ready, then runs OpenClaw. If a NoLlama is **already** on the port it
 **verifies** it (prefix caching on + a tool-capable GPU/CPU slot) and reuses it —
 or, if it's misconfigured, tells you why and offers to restart it correctly
 (`-Force` to skip the prompt). `-Warmup` fires one throwaway turn first so even
 the first real turn is fast.
 
-> **NoLlama runs OpenCLAW in a deliberately constrained mode — by design.** A
+> **NoLlama runs OpenClaw in a deliberately constrained mode — by design.** A
 > coding-agent prompt is large (~21k tokens of system prompt + tool schemas), which
 > is a lot for a small local model on weak Intel hardware. So `-Setup` doesn't just
-> point OpenCLAW at NoLlama — it also **trims OpenCLAW** to fit: it selects the
+> point OpenClaw at NoLlama — it also **trims OpenClaw** to fit: it selects the
 > `coding` tool profile and turns off web search, X search, memory search, and the
 > startup-context prelude. This shrinks the prompt and tool surface so a 7B coder on
 > an iGPU/CPU can actually drive the loop. It's all plain config in
@@ -652,7 +652,7 @@ install.ps1             Setup wizard
 download-model.ps1      Download/convert any HuggingFace model
 benchmark.py            Device performance benchmark
 start.ps1               Auto-generated launcher (after install)
-start-openclaw.ps1      Launch NoLlama (caching + pre-warm) + OpenCLAW together
+start-openclaw.ps1      Launch NoLlama (caching + pre-warm) + OpenClaw together
 models.json             Curated model registry
 model/                  Primary model (NPU or GPU)
 gpu-model/              Secondary GPU model (dual mode)

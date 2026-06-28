@@ -1,13 +1,13 @@
 #requires -Version 7.0
 # start-openclaw.ps1 — launch the agent stack in one command:
 # NoLlama (serving a coder model, with prefix caching + startup pre-warm) +
-# OpenCLAW (the coding agent that talks to it). The NoLlama equivalent of
+# OpenClaw (the coding agent that talks to it). The NoLlama equivalent of
 # `ollama launch openclaw`.
 #
-# First-time OpenCLAW install (once):
+# First-time OpenClaw install (once):
 #   npm install -g openclaw@latest
 #   openclaw onboard --install-daemon
-# Then point OpenCLAW at NoLlama with this script's -Setup switch (once):
+# Then point OpenClaw at NoLlama with this script's -Setup switch (once):
 #   ./start-openclaw.ps1 -Setup
 #
 # Tools need a GPU/iGPU or CPU slot (not the NPU). On a weak desktop iGPU, CPU is
@@ -20,7 +20,7 @@ param(
     [int]$Port        = 8000,
     [string]$Prewarm  = "prewarm.json",   # prefix-cache pre-warm file (auto-captured on first big prompt)
     [string]$Openclaw = "chat",           # openclaw subcommand to run once NoLlama is ready
-    [switch]$Setup,                        # (re)write OpenCLAW's NoLlama config (provider + coding profile), then continue
+    [switch]$Setup,                        # (re)write OpenClaw's NoLlama config (provider + coding profile), then continue
     [switch]$Warmup,                       # fire one throwaway turn first to build prewarm.json + warm the cache
     [switch]$Force                         # if a running NoLlama is unsuitable, stop+restart it without prompting
 )
@@ -58,7 +58,7 @@ function Resolve-Device {
     return "CPU"
 }
 
-# A running NoLlama is usable for OpenCLAW only if prefix caching is on AND there's
+# A running NoLlama is usable for OpenClaw only if prefix caching is on AND there's
 # a tool-capable GPU/CPU LLM slot. Returns the list of problems ([] = good).
 function Get-Problems($h) {
     $problems = @()
@@ -132,7 +132,7 @@ function Invoke-Setup {
     # set. Re-runnable any time (idempotent) to restore our settings — npm package
     # updates don't touch ~/.openclaw/openclaw.json, but re-onboarding might, so
     # this is the recovery path.
-    Write-Host "Configuring OpenCLAW for NoLlama ($ApiBase/v1, $ModelName, coding profile)" -ForegroundColor Cyan
+    Write-Host "Configuring OpenClaw for NoLlama ($ApiBase/v1, $ModelName, coding profile)" -ForegroundColor Cyan
     $patch = @"
 {
   models: { providers: { nollama: {
@@ -160,7 +160,7 @@ function Invoke-Setup {
 }
 
 function Test-NollamaProvider {
-    # Is OpenCLAW's `nollama` provider configured on this machine?
+    # Is OpenClaw's `nollama` provider configured on this machine?
     if (-not (Get-Command openclaw -ErrorAction SilentlyContinue)) { return $true }  # can't check; assume ok
     $v = (& openclaw config get models.providers.nollama.baseUrl 2>$null)
     return -not [string]::IsNullOrWhiteSpace("$v")
@@ -173,7 +173,7 @@ Write-Host "Device: $Device" -ForegroundColor DarkGray
 if ($Setup) {
     Invoke-Setup
 } elseif (-not (Test-NollamaProvider)) {
-    Write-Host "OpenCLAW has no 'nollama' provider on this machine - running setup automatically." -ForegroundColor Yellow
+    Write-Host "OpenClaw has no 'nollama' provider on this machine - running setup automatically." -ForegroundColor Yellow
     Invoke-Setup
 }
 
@@ -219,7 +219,7 @@ try {
             Select-Object -Last 2
         Write-Host "Warmup done." -ForegroundColor Green
     }
-    Write-Host "Launching OpenCLAW ($Openclaw)..." -ForegroundColor Green
+    Write-Host "Launching OpenClaw ($Openclaw)..." -ForegroundColor Green
     & openclaw $Openclaw
 }
 finally {

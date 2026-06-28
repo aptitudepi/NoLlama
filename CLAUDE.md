@@ -74,12 +74,12 @@ OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
 - Tool-enabled turns are buffered, not token-streamed: we must see the whole tool-call block
   before emitting a structured `tool_calls` delta, so the full generation is collected before
   the result is sent (no incremental tokens that turn). To stop a slow prefill on a big agent
-  prompt from tripping client idle watchdogs (Copilot/OpenCLAW abort with no output after
+  prompt from tripping client idle watchdogs (Copilot/OpenClaw abort with no output after
   ~120s), the streaming tool path runs generation in a background thread and emits SSE
   keep-alive pings every `HEARTBEAT_SECS` (`_sse_tool_stream`); the plain stream path
   (`stream_llm`) pings the same way during a long prefill. True token streaming on tool turns
   (stream until a tool-call prefix appears) is still TODO.
-- Big agent prompts (OpenCLAW ships ~21k-token system prompts) prefill slowly on weak iGPUs
+- Big agent prompts (OpenClaw ships ~21k-token system prompts) prefill slowly on weak iGPUs
   (~6 min TTFT on the desktop 285K Xe-LPG). Mitigations: smaller coder model, CPU on strong
   desktops, trimming the client's tool set, and the keep-alive above so turns complete instead
   of aborting. OpenVINO can't cancel a blocked prefill, so an aborted client leaves the

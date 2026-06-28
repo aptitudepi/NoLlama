@@ -1,21 +1,21 @@
-# Running OpenCLAW on NoLlama (Intel iGPU/GPU) — Today
+# Running OpenClaw on NoLlama (Intel iGPU/GPU) — Today
 
-Goal: drive the **OpenCLAW** terminal coding agent with a model served locally by
+Goal: drive the **OpenClaw** terminal coding agent with a model served locally by
 NoLlama on the Intel Arc 140V (or any Intel GPU/iGPU), with tool calling working.
 
-This needs **no new NoLlama code** — OpenCLAW speaks the OpenAI chat-completions
+This needs **no new NoLlama code** — OpenClaw speaks the OpenAI chat-completions
 protocol, which NoLlama already serves, and the GPU tool-calling path landed with
 PR #9. The work is configuration + one launch convenience, plus verification.
 
 > Claude Code is **not** covered here — it speaks the Anthropic Messages API
 > (`POST /v1/messages`), which NoLlama does not serve. That would be a separate
-> feature (an Anthropic-Messages translation shim). OpenCLAW is the cheap win.
+> feature (an Anthropic-Messages translation shim). OpenClaw is the cheap win.
 
 ---
 
 ## Why this works without code changes
 
-| Requirement | OpenCLAW | NoLlama today |
+| Requirement | OpenClaw | NoLlama today |
 | --- | --- | --- |
 | Wire protocol | "any endpoint that implements the OpenAI chat completions API" (`api: "openai-completions"`) | `POST /v1/chat/completions`, `GET /v1/models` |
 | Tool calling | sends `tools` every agent turn | parsed/emitted **GPU-only** (`_tools_supported`, PR #9) |
@@ -26,7 +26,7 @@ PR #9. The work is configuration + one launch convenience, plus verification.
 ## The one thing that will bite us: routing
 
 NoLlama's default routing sends **text → NPU**, but **tools are GPU-only**. If an
-OpenCLAW request lands on the NPU, NoLlama silently ignores `tools` and answers as
+OpenClaw request lands on the NPU, NoLlama silently ignores `tools` and answers as
 plain chat — the agent loop breaks (no tool calls ever come back).
 
 **Fix:** address the model by its `@GPU`-suffixed id. `_route_request`
@@ -39,7 +39,7 @@ if requested_model in (slot_full, slot.model_name):
     return slot
 ```
 
-So OpenCLAW's model id **must** be `<model_name>@GPU`, not the bare name (the bare
+So OpenClaw's model id **must** be `<model_name>@GPU`, not the bare name (the bare
 name would route to the NPU whenever an NPU slot is loaded).
 
 ---
@@ -67,9 +67,9 @@ Confirm the GPU LLM is up and note its exact id:
 curl http://localhost:8000/v1/models
 ```
 
-## Step 2 — Prove the OpenCLAW-critical path with one request
+## Step 2 — Prove the OpenClaw-critical path with one request
 
-Before involving OpenCLAW, confirm a `tools` request addressed to `<model>@GPU`
+Before involving OpenClaw, confirm a `tools` request addressed to `<model>@GPU`
 comes back with a `tool_calls` array (this is the whole integration in one curl):
 
 ```bash
@@ -89,9 +89,9 @@ If you instead get plain prose, you hit the NPU — re-check the `@GPU` suffix.
 (Note: with `tools` present the response is **buffered, not streamed** — a known
 NoLlama limitation, not a bug.)
 
-## Step 3 — Point OpenCLAW at NoLlama
+## Step 3 — Point OpenClaw at NoLlama
 
-Add a provider to `openclaw.json` (confirm the path OpenCLAW reads — project dir or
+Add a provider to `openclaw.json` (confirm the path OpenClaw reads — project dir or
 `~/.config/openclaw/`; the onboarding wizard will tell you). NoLlama does no auth,
 so `apiKey` just needs to be non-empty.
 
@@ -124,7 +124,7 @@ so `apiKey` just needs to be non-empty.
 ```
 
 - `id` must be the `@GPU` form from `/v1/models`.
-- Verify OpenCLAW forwards the id **verbatim** (including `@GPU`) as the request's
+- Verify OpenClaw forwards the id **verbatim** (including `@GPU`) as the request's
   `model` — that's what the routing override matches on.
 - `contextWindow` / `maxTokens` are starting guesses — tune to the model.
 
@@ -135,21 +135,21 @@ openclaw      # or `openclaw chat`, per its CLI
 ```
 
 Give it a task that forces a tool call ("list the files in this folder", "read
-README.md"). Success = OpenCLAW invokes a tool, NoLlama logs a tool turn on the
-`[GPU]` slot, OpenCLAW acts on the result.
+README.md"). Success = OpenClaw invokes a tool, NoLlama logs a tool turn on the
+`[GPU]` slot, OpenClaw acts on the result.
 
 Convenience launcher: **`start-openclaw.ps1`** (built) — the NoLlama equivalent of
 `ollama launch openclaw`. It reuses a NoLlama already on the port, or starts one with the
 agent flags (`--device`, `--idle-timeout 0`, `--prewarm`), waits for it to be ready, then
 runs `openclaw`. Params: `-ModelDir`, `-Device CPU|GPU`, `-Port`, `-Prewarm`, `-Openclaw`.
 The prefix-cache pre-fill itself is internal to NoLlama (`--prewarm`); the script just wires
-NoLlama + OpenCLAW together.
+NoLlama + OpenClaw together.
 
 ---
 
 ## Open items / risks
 
-1. **`@` in the model id.** Confirm OpenCLAW's `provider/model` parser keeps `@GPU`
+1. **`@` in the model id.** Confirm OpenClaw's `provider/model` parser keeps `@GPU`
    as part of the model id and sends it through. If it chokes on `@`, use the
    **text→GPU override** instead (preferred anyway — see below).
 
@@ -161,17 +161,17 @@ NoLlama + OpenCLAW together.
      (or just before routing in `chat_completions`), *if the request carries
      `tools` and a GPU slot is serviceable, route to that GPU slot.* Tools are
      GPU-only regardless, so a tools-bearing request has no business on the NPU.
-     This makes OpenCLAW work with the **bare** model name — no `@GPU` trick, no
-     reliance on OpenCLAW forwarding `@` verbatim. This is the clean version of
+     This makes OpenClaw work with the **bare** model name — no `@GPU` trick, no
+     reliance on OpenClaw forwarding `@` verbatim. This is the clean version of
      what the launcher would otherwise paper over.
    - **Wrapper-side (zero NoLlama code):** the `launch-openclaw.ps1` wrapper just
      writes/ensures the `@GPU` id in `openclaw.json`. Works today, but fragile if
-     OpenCLAW mangles `@`.
+     OpenClaw mangles `@`.
 
    Recommendation: ship with the `@GPU` id to prove it end-to-end **today**, then
    add the server-side `tools⇒GPU` route as the durable fix.
 2. **`openclaw.json` location** — confirm via the onboarding wizard.
-3. **No streaming on tool turns** — expected; OpenCLAW agent mode is always buffered.
+3. **No streaming on tool turns** — expected; OpenClaw agent mode is always buffered.
 4. **Model fit** — keep the GPU LLM under 16 GB or it silently falls back to CPU.
 
 ## Out of scope
