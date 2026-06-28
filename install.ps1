@@ -6,9 +6,10 @@
 #     .\install.ps1 -SkipModel            # venv + deps only
 #     .\install.ps1 -HfToken hf_xxx       # auth for gated/private models
 #
-# Detects available devices (NPU, GPU, CPU), then walks the user
-# through model selection. NPU-first: if you have an NPU, that's
-# your primary chat device.
+# Detects available devices (NPU, GPU, CPU), then asks what you want to DO
+# (chat / coding agent / vision / combos) and places each model on the best
+# device. Coding-agent models (OpenCLAW / Copilot, tool-calling) and CPU are
+# first-class choices, not buried.
 #
 # -HfToken: a HuggingFace access token (https://huggingface.co/settings/tokens).
 # Only needed for gated or private models — the curated OpenVINO models are
@@ -443,97 +444,127 @@ function Install-Model {
 }
 
 # ---------------------------------------------------------------------------
-# 4. Model selection — NPU-first
+# 4. Model selection — use-case first
 # ---------------------------------------------------------------------------
+# Ask what the user wants to DO, then place each model on the best device.
+# NoLlama runs ONE primary model + (optionally) ONE GPU secondary, so the combos
+# are: chat / agent / vision alone, or NPU(or CPU) chat + a GPU coder/vision.
 
 $ModelDir = Join-Path $ScriptDir "model"
 $GpuModelDir = Join-Path $ScriptDir "gpu-model"
 $StartArgs = @()  # collect args for start.ps1
 
-if ($HasNPU) {
-    # --- Step 1: NPU chat model ---
-    # Only show local models that are NPU-compatible (int4-cw, reasonable size)
-    $npuLocal = @($LocalModels | Where-Object { $_.Type -eq "llm" -and $_.NpuOk })
-    $sel = Show-ModelMenu -Title "Step 1: Chat Model (NPU)" `
-        -RegistryModels $Registry.npu `
-        -LocalModels $npuLocal `
-        -LocalLabel "Already converted (instant)"
-
-    $NpuSelectedName = $null
-    if ($sel) {
-        $NpuSelectedName = $sel.Name
-        $ok = Install-Model -Selected $sel -TargetDir $ModelDir
-        if (-not $ok) { Write-Host ""; Write-Host "Model installation failed. You can re-run install.ps1 to try again." -ForegroundColor Yellow; Pop-Location; exit 1 }
-        $StartArgs += @("--device", "NPU")
-        Write-Host ""
-    }
-
-    # --- Step 2: GPU model (optional) ---
-    if ($HasGPU) {
-        Write-Host ""
-        Write-Host "=== Step 2: GPU Model (optional) ===" -ForegroundColor Cyan
-        Write-Host ""
-        Write-Host "  You also have an Intel ARC GPU. What do you want to use it for?"
-        Write-Host ""
-        Write-Host "    A. Vision model  — image understanding alongside NPU chat"
-        Write-Host "    B. Bigger LLM    — much smarter chat than the NPU model"
-        Write-Host "    C. Skip          — NPU chat only"
-        Write-Host ""
-        while ($true) {
-            $gpuChoice = (Read-Host "  [A/B/C]").ToUpper()
-            if ($gpuChoice -in @("A", "B", "C", "")) { break }
-            Write-Host "  Enter A, B, or C" -ForegroundColor Red
-        }
-
-        if ($gpuChoice -eq "A") {
-            $vlmLocal = @($LocalModels | Where-Object { $_.Type -eq "vlm" })
-            $sel = Show-ModelMenu -Title "GPU Vision Model" `
-                -RegistryModels $Registry.gpu_vlm `
-                -LocalModels $vlmLocal
-            if ($sel) {
-                $ok = Install-Model -Selected $sel -TargetDir $GpuModelDir
-                if ($ok) { $StartArgs += @("--gpu-model-dir", "gpu-model") }
-                Write-Host ""
-            }
-        } elseif ($gpuChoice -eq "B") {
-            $llmLocal = @($LocalModels | Where-Object { $_.Type -eq "llm" -and $_.Name -ne $NpuSelectedName })
-            $sel = Show-ModelMenu -Title "GPU LLM (bigger chat model)" `
-                -RegistryModels $Registry.gpu_llm `
-                -LocalModels $llmLocal
-            if ($sel) {
-                $ok = Install-Model -Selected $sel -TargetDir $GpuModelDir
-                if ($ok) { $StartArgs += @("--gpu-model-dir", "gpu-model") }
-                Write-Host ""
-            }
-        }
-    }
-} elseif ($HasGPU) {
-    # --- No NPU, GPU only ---
-    Write-Host "No NPU detected. Selecting a GPU model." -ForegroundColor Yellow
+function Select-Device {
+    param([string]$Purpose, [string[]]$Choices, [string]$Note = "")
+    if ($Choices.Count -eq 1) { return $Choices[0] }
     Write-Host ""
-    $allGpu = @($Registry.gpu_vlm) + @($Registry.gpu_llm)
-    $sel = Show-ModelMenu -Title "GPU Model" `
-        -RegistryModels $allGpu `
-        -LocalModels $LocalModels
-    if ($sel) {
-        $ok = Install-Model -Selected $sel -TargetDir $ModelDir
-        if (-not $ok) { Pop-Location; exit 1 }
-        $StartArgs += @("--device", "GPU")
-        Write-Host ""
+    Write-Host "  Run $Purpose on which device?" -ForegroundColor Cyan
+    if ($Note) { Write-Host "    $Note" -ForegroundColor DarkGray }
+    for ($i = 0; $i -lt $Choices.Count; $i++) { Write-Host "    $($i + 1). $($Choices[$i])" }
+    while ($true) {
+        $c = Read-Host "  [1-$($Choices.Count)]"
+        $n = 0
+        if ([int]::TryParse($c, [ref]$n) -and $n -ge 1 -and $n -le $Choices.Count) { return $Choices[$n - 1] }
+        Write-Host "  Enter 1-$($Choices.Count)" -ForegroundColor Red
     }
-} else {
-    # --- No NPU, no GPU — CPU fallback ---
-    Write-Host "No NPU or GPU detected. Models will run on CPU (slower)." -ForegroundColor Yellow
+}
+
+# Chat can run anywhere; small NPU-class models + bigger GPU LLMs both work on GPU/CPU.
+function Get-ChatRegistry { param([string]$Device)
+    if ($Device -eq "NPU") { return $Registry.npu }
+    return @($Registry.npu) + @($Registry.gpu_llm)
+}
+function Get-ChatLocal { param([string]$Device, [string]$Exclude = "")
+    @($LocalModels | Where-Object { $_.Type -eq "llm" -and (($Device -ne "NPU") -or $_.NpuOk) -and $_.Name -ne $Exclude })
+}
+
+# --- Use-case menu (filtered by available hardware) ---
+Write-Host ""
+Write-Host "=== What will you use NoLlama for? ===" -ForegroundColor Cyan
+Write-Host ""
+$cases = @()
+$cases += [PSCustomObject]@{ Key = "chat";   Label = "Chat";         Desc = "text assistant" }
+$cases += [PSCustomObject]@{ Key = "agent";  Label = "Coding agent"; Desc = "OpenCLAW / VS Code Copilot (tool-calling)" }
+if ($HasGPU) {
+    $cases += [PSCustomObject]@{ Key = "vision";      Label = "Vision";             Desc = "image understanding (GPU)" }
+    $cases += [PSCustomObject]@{ Key = "chat+agent";  Label = "Chat + Coding agent"; Desc = "chat model + a GPU coder, together" }
+    $cases += [PSCustomObject]@{ Key = "chat+vision"; Label = "Chat + Vision";       Desc = "chat model + GPU vision (classic)" }
+}
+for ($i = 0; $i -lt $cases.Count; $i++) {
+    Write-Host ("  {0}. {1}" -f ($i + 1), $cases[$i].Label) -NoNewline
+    Write-Host "  $($cases[$i].Desc)" -ForegroundColor DarkGray
+}
+Write-Host ""
+$useKey = $null
+while ($null -eq $useKey) {
+    $c = Read-Host "Pick [1-$($cases.Count)]"
+    $n = 0
+    if ([int]::TryParse($c, [ref]$n) -and $n -ge 1 -and $n -le $cases.Count) { $useKey = $cases[$n - 1].Key }
+    else { Write-Host "Enter 1-$($cases.Count)" -ForegroundColor Red }
+}
+
+$chatDevices  = @(); if ($HasNPU) { $chatDevices += "NPU" }; if ($HasGPU) { $chatDevices += "GPU" }; $chatDevices += "CPU"
+$agentDevices = @(); if ($HasGPU) { $agentDevices += "GPU" }; $agentDevices += "CPU"
+$coders = @($Registry.gpu_llm | Where-Object { $_.agent })   # OpenCLAW/Copilot-ready
+$isAgent = $false
+
+function Install-Primary { param($Sel, [string]$Device)
+    if (-not (Install-Model -Selected $Sel -TargetDir $ModelDir)) {
+        Write-Host "Model installation failed. Re-run install.ps1 to retry." -ForegroundColor Yellow; Pop-Location; exit 1
+    }
+    $script:StartArgs += @("--device", $Device)
+}
+
+switch ($useKey) {
+    "chat" {
+        $dev = Select-Device -Purpose "chat" -Choices $chatDevices
+        $sel = Show-ModelMenu -Title "Chat model ($dev)" -RegistryModels (Get-ChatRegistry $dev) -LocalModels (Get-ChatLocal $dev)
+        if ($sel) { Install-Primary $sel $dev }
+    }
+    "agent" {
+        $dev = Select-Device -Purpose "the coding agent" -Choices $agentDevices `
+            -Note "GPU is usually faster; CPU often wins on strong desktops / weak iGPUs."
+        $loc = @($LocalModels | Where-Object { $_.Type -eq "llm" })
+        $sel = Show-ModelMenu -Title "Coding agent model ($dev) - OpenCLAW / Copilot ready" -RegistryModels $coders -LocalModels $loc
+        if ($sel) { Install-Primary $sel $dev; $StartArgs += @("--prewarm", "prewarm.json", "--vscode-compat"); $isAgent = $true }
+    }
+    "vision" {
+        $loc = @($LocalModels | Where-Object { $_.Type -eq "vlm" })
+        $sel = Show-ModelMenu -Title "Vision model (GPU)" -RegistryModels $Registry.gpu_vlm -LocalModels $loc
+        if ($sel) { Install-Primary $sel "GPU" }
+    }
+    "chat+agent" {
+        $chatDev = if ($HasNPU) { "NPU" } else { "CPU" }
+        $chatSel = Show-ModelMenu -Title "Chat model ($chatDev)" -RegistryModels (Get-ChatRegistry $chatDev) -LocalModels (Get-ChatLocal $chatDev)
+        if ($chatSel) {
+            Install-Primary $chatSel $chatDev
+            $cloc = @($LocalModels | Where-Object { $_.Type -eq "llm" -and $_.Name -ne $chatSel.Name })
+            $coderSel = Show-ModelMenu -Title "Coding agent model (GPU) - OpenCLAW / Copilot ready" -RegistryModels $coders -LocalModels $cloc -AllowSkip $true
+            if ($coderSel -and (Install-Model -Selected $coderSel -TargetDir $GpuModelDir)) {
+                $StartArgs += @("--gpu-model-dir", "gpu-model", "--prewarm", "prewarm.json", "--vscode-compat"); $isAgent = $true
+            }
+        }
+    }
+    "chat+vision" {
+        $chatDev = if ($HasNPU) { "NPU" } else { "CPU" }
+        $chatSel = Show-ModelMenu -Title "Chat model ($chatDev)" -RegistryModels (Get-ChatRegistry $chatDev) -LocalModels (Get-ChatLocal $chatDev)
+        if ($chatSel) {
+            Install-Primary $chatSel $chatDev
+            $vloc = @($LocalModels | Where-Object { $_.Type -eq "vlm" })
+            $visSel = Show-ModelMenu -Title "Vision model (GPU)" -RegistryModels $Registry.gpu_vlm -LocalModels $vloc -AllowSkip $true
+            if ($visSel -and (Install-Model -Selected $visSel -TargetDir $GpuModelDir)) {
+                $StartArgs += @("--gpu-model-dir", "gpu-model")
+            }
+        }
+    }
+}
+
+if ($isAgent) {
     Write-Host ""
-    $sel = Show-ModelMenu -Title "CPU Model" `
-        -RegistryModels $Registry.npu `
-        -LocalModels @($LocalModels | Where-Object { $_.Type -eq "llm" })
-    if ($sel) {
-        $ok = Install-Model -Selected $sel -TargetDir $ModelDir
-        if (-not $ok) { Pop-Location; exit 1 }
-        $StartArgs += @("--device", "CPU")
-        Write-Host ""
-    }
+    Write-Host "Coding agent ready. To drive it with OpenCLAW:" -ForegroundColor Green
+    Write-Host "  npm install -g openclaw@latest      # once" -ForegroundColor DarkGray
+    Write-Host "  openclaw onboard --install-daemon   # once" -ForegroundColor DarkGray
+    Write-Host "  ./start-openclaw.ps1 -Setup -Warmup # configures + launches the agent" -ForegroundColor Yellow
 }
 
 # ---------------------------------------------------------------------------

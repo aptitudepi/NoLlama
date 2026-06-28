@@ -10,6 +10,10 @@ discrete GPUs (A770, B580), or any Intel CPU. Automatically detects your
 hardware, picks the best device, and exposes both OpenAI and Ollama
 compatible APIs — so any client that speaks to either just works.
 
+**It drives coding agents, too.** VS Code Copilot Chat and OpenCLAW run against
+NoLlama with local **tool-calling** on your Intel GPU or CPU — no cloud, no
+NVIDIA. See [Agent tools & coding assistants](#agent-tools--coding-assistants-vs-code-copilot-openclaw).
+
 ![NoLlama in action](docs/images/nollama-demo.gif)
 
 ## Quick start
@@ -26,20 +30,23 @@ chat UI in your browser at http://localhost:8000.
 
 ## Recommended models
 
-New here, or re-running `install.ps1`? This is the proven pairing for a
-Core Ultra laptop (NPU + ARC iGPU) — just pick these two in the menu:
+New here, or re-running `install.ps1`? Pick a **use-case** in the menu — here are
+the proven models per role on a Core Ultra laptop (NPU + ARC iGPU):
 
-| Role | Pick in the menu | HuggingFace | Size |
-|---|---|---|---|
-| **NPU chat** | Qwen3 8B (INT4-CW) | `OpenVINO/Qwen3-8B-int4-cw-ov` | ~5 GB |
-| **GPU vision** | Qwen3-VL 8B (INT8) | `OpenVINO/Qwen3-VL-8B-Instruct-int8-ov` | ~9 GB |
+| Use-case | Role | Pick in the menu | HuggingFace | Size |
+|---|---|---|---|---|
+| Chat | **NPU chat** | Qwen3 8B (INT4-CW) | `OpenVINO/Qwen3-8B-int4-cw-ov` | ~5 GB |
+| Vision | **GPU vision** | Qwen3-VL 8B (INT8) | `OpenVINO/Qwen3-VL-8B-Instruct-int8-ov` | ~9 GB |
+| Coding agent | **GPU/CPU coder** | Qwen2.5-Coder 7B (INT4) | `OpenVINO/Qwen2.5-Coder-7B-Instruct-int4-ov` | ~5 GB |
 
 Qwen3 8B is the best-quality text model verified on the NPU. Qwen3-VL 8B
 is the matching vision model — the INT8 build keeps fine detail (OCR,
 small numbers) and fits a 16 GB ARC; drop to the ~6 GB INT4 build
-(`…-int4-ov`) if you're tight on VRAM. Both are pre-exported (install
-instantly, no conversion), and returning users see them flagged
-**"Already on disk"** in the menu.
+(`…-int4-ov`) if you're tight on VRAM. For **coding agents** (VS Code Copilot
+Chat, OpenCLAW), pick the "Coding agent" use-case and a **Qwen2.5-Coder** model —
+7B for snappy turns, 14B for stronger multi-step work; it runs on the GPU, or on
+the CPU (which beats a weak iGPU on strong desktops). All are pre-exported
+(install instantly), and returning users see them flagged **"Already on disk"**.
 
 ## What it does
 
