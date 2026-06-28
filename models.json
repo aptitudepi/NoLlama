@@ -118,21 +118,21 @@
             "hf_id": "OpenVINO/whisper-base-int8-ov",
             "source": "pre-exported",
             "est_size_gb": 0.2,
-            "notes": "Fastest. Multi-language. Pre-exported — instant install, no conversion step."
+            "notes": "Fastest. Multi-language. Pre-exported — no conversion step (just a small, quick download)."
         },
         {
             "name": "Whisper Small (INT8)",
             "hf_id": "OpenVINO/whisper-small-int8-ov",
             "source": "pre-exported",
             "est_size_gb": 0.4,
-            "notes": "Good balance. Multi-language. Pre-exported — instant install."
+            "notes": "Good balance. Multi-language. Pre-exported — no conversion step (small, quick download)."
         },
         {
             "name": "Whisper Medium (INT8)",
             "hf_id": "OpenVINO/whisper-medium-int8-ov",
             "source": "pre-exported",
             "est_size_gb": 0.9,
-            "notes": "Best accuracy under 16 GB. Multi-language. Pre-exported — instant install."
+            "notes": "Best accuracy under 16 GB. Multi-language. Pre-exported — no conversion step (download still needed)."
         }
     ],
 

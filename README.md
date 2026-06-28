@@ -45,8 +45,9 @@ small numbers) and fits a 16 GB ARC; drop to the ~6 GB INT4 build
 (`…-int4-ov`) if you're tight on VRAM. For **coding agents** (VS Code Copilot
 Chat, OpenCLAW), pick the "Coding agent" use-case and a **Qwen2.5-Coder** model —
 7B for snappy turns, 14B for stronger multi-step work; it runs on the GPU, or on
-the CPU (which beats a weak iGPU on strong desktops). All are pre-exported
-(install instantly), and returning users see them flagged **"Already on disk"**.
+the CPU (which beats a weak iGPU on strong desktops). All are pre-exported — **no
+conversion step**, though the multi-GB download still takes a while — and returning
+users see them flagged **"Already on disk"** (those link instantly).
 
 ## What it does
 
@@ -564,8 +565,9 @@ authoritative place to look is the OpenVINO org on HuggingFace:
 
 **[huggingface.co/OpenVINO](https://huggingface.co/OpenVINO)**
 
-These are pre-exported by Intel, so they install instantly (no
-conversion). What to look for:
+These are pre-exported by Intel, so there's **no conversion step** — just a
+download (still slow for multi-GB models, but no 5-20 min `optimum-cli` export).
+What to look for:
 
 | Suffix | Where it runs | Notes |
 |---|---|---|
