@@ -468,10 +468,27 @@ runs against a NoLlama GPU slot with no code changes, just config. See
 [OPENCLAW-PLAN.md](OPENCLAW-PLAN.md) for the step-by-step setup (the one gotcha:
 address the model as `<name>@GPU` so tool requests hit the GPU, not the NPU).
 
-Once configured, **`start-openclaw.ps1`** launches both together (the NoLlama
-equivalent of `ollama launch openclaw`): it starts NoLlama with the agent flags
-(`--device`, `--prewarm`, keep-loaded), waits for it to be ready, then runs
-OpenCLAW. Reuses a NoLlama already on the port. E.g. `./start-openclaw.ps1 -Device GPU`.
+**Install OpenCLAW** (once):
+
+```powershell
+npm install -g openclaw@latest
+openclaw onboard --install-daemon
+```
+
+Then **`start-openclaw.ps1`** is the one-command launcher (the NoLlama equivalent
+of `ollama launch openclaw`):
+
+```powershell
+./start-openclaw.ps1 -Setup -Device GPU     # -Setup writes the `nollama` provider into openclaw.json
+./start-openclaw.ps1 -Device GPU            # subsequent runs
+```
+
+It starts NoLlama with the agent flags (`--device`, `--prewarm`, keep-loaded),
+waits until ready, then runs OpenCLAW. If a NoLlama is **already** on the port it
+**verifies** it (prefix caching on + a tool-capable GPU/CPU slot) and reuses it —
+or, if it's misconfigured, tells you why and offers to restart it correctly
+(`-Force` to skip the prompt). `-Setup` (re)writes OpenCLAW's `nollama` provider
+so it points at this server.
 
 ## Models
 

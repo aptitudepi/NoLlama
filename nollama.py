@@ -898,6 +898,8 @@ class DeviceSlot:
             "model": self.model_name,
             "type": self.model_type,
             "device": self.device_full,
+            "device_name": self.device_name,   # canonical NPU/GPU/CPU (routing/checks)
+            "tools": _tools_supported(self),    # can this slot drive an agent loop?
         }
 
 
@@ -1282,7 +1284,8 @@ def health():
         devices[primary.device_name.lower()] = primary.info
     if secondary and secondary.status != "not_configured":
         devices[secondary.device_name.lower()] = secondary.info
-    result = {"status": overall_status(), "devices": devices}
+    result = {"status": overall_status(), "devices": devices,
+              "prompt_cache": PROMPT_CACHE}
     if whisper_slot and whisper_slot.status != "not_configured":
         result["whisper"] = whisper_slot.info
     return jsonify(result)
