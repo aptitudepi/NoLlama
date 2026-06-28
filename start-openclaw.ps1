@@ -145,8 +145,20 @@ function Invoke-Setup {
     Remove-Item $tmp -ErrorAction SilentlyContinue
 }
 
+function Test-NollamaProvider {
+    # Is OpenCLAW's `nollama` provider configured on this machine?
+    if (-not (Get-Command openclaw -ErrorAction SilentlyContinue)) { return $true }  # can't check; assume ok
+    $v = (& openclaw config get models.providers.nollama.baseUrl 2>$null)
+    return -not [string]::IsNullOrWhiteSpace("$v")
+}
+
 # --- main ---------------------------------------------------------------------
-if ($Setup) { Invoke-Setup }
+if ($Setup) {
+    Invoke-Setup
+} elseif (-not (Test-NollamaProvider)) {
+    Write-Host "OpenCLAW has no 'nollama' provider on this machine - running setup automatically." -ForegroundColor Yellow
+    Invoke-Setup
+}
 
 $ownServer = $false
 $server = $null
