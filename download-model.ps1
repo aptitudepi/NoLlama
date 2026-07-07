@@ -5,9 +5,14 @@
 #     .\download-model.ps1 OpenVINO/Qwen3-8B-int4-cw-ov          # pre-exported, just download
 #     .\download-model.ps1 Qwen/Qwen2.5-VL-3B-Instruct --convert --weight int8
 #     .\download-model.ps1 Qwen/Qwen2.5-VL-3B-Instruct --convert --weight int4 --trust
+#     .\download-model.ps1 some-org/gated-model -HfToken hf_xxx  # auth for gated/private models
 #
 # Downloads to ~/models/<repo-name>/ by default.
 # Use --output to override the target directory.
+#
+# -HfToken: a HuggingFace access token (https://huggingface.co/settings/tokens).
+# Needed for gated/private models; also lifts the unauthenticated rate limit.
+# Alternative to a stored 'hf auth login' — same mechanism as install.ps1.
 
 param(
     [Parameter(Mandatory=$true, Position=0)]
@@ -19,11 +24,21 @@ param(
 
     [switch]$Trust,
 
-    [string]$Output = ""
+    [string]$Output = "",
+
+    [string]$HfToken
 )
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# huggingface_hub reads HF_TOKEN from the environment, so both 'hf download'
+# and optimum-cli pick it up with no further changes. Only set when -HfToken
+# was given; otherwise any token stored via 'hf auth login' is used as before.
+if ($HfToken) {
+    $env:HF_TOKEN = $HfToken
+    Write-Host "[+] HF token set for this session (gated/private model auth)" -ForegroundColor DarkGray
+}
 
 # Activate venv (Scripts on Windows, bin on POSIX)
 $VenvBinDir = if ($IsWindows) { "Scripts" } else { "bin" }
@@ -99,7 +114,7 @@ if ($Convert) {
     if (-not $?) {
         Write-Host ""
         Write-Host "ERROR: Download failed." -ForegroundColor Red
-        Write-Host "  If 401/403: run 'huggingface-cli login' first" -ForegroundColor Yellow
+        Write-Host "  If 401/403: pass -HfToken hf_xxx (or run 'hf auth login' first)" -ForegroundColor Yellow
         exit 1
     }
 }

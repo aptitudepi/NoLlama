@@ -2127,6 +2127,9 @@ def parse_args():
                    help="Secondary GPU model (enables dual mode: NPU chat + GPU vision/LLM)")
     p.add_argument("--port", type=int, default=8000,
                    help="OpenAI API port (default: 8000)")
+    # Note: the CLI flag is --ollama-port (dash), read back as args.ollama_port
+    # (underscore) — argparse converts dashes to underscores in attribute names
+    # by design, per Python convention. Same for every --two-word flag here.
     p.add_argument("--ollama-port", type=int, default=11434,
                    help="Ollama API port (default: 11434, 0 to disable)")
     p.add_argument("--max-dim", type=int, default=768,

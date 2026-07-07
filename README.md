@@ -530,6 +530,7 @@ token](https://huggingface.co/settings/tokens) (the `hf_…` string) for
 
 ```powershell
 .\install.ps1 -HfToken hf_xxxxxxxxxxxxxxxxxxxxx
+.\download-model.ps1 some-org/gated-model -HfToken hf_xxxxxxxxxxxxxxxxxxxxx
 ```
 
 Note: `hf auth login` won't help on a first run — `install.ps1` is what
