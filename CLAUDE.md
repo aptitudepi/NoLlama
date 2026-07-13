@@ -26,7 +26,7 @@ OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
 - Collapsible `<think>` blocks, "Just answer me, dammit!" button, temperature slider
 - `threaded=True` on Flask, concurrency via per-device locks
 - `models.json` — curated model registry (npu, gpu_vlm, gpu_llm, whisper categories)
-- `install.ps1` detects devices, shows model menu, generates `start.ps1`
+- `install.sh` (Linux) / `install.ps1` (Windows) — detects devices, shows model menu, generates `start.sh`/`start.ps1`
 - Tool calling: **GPU/iGPU + CPU** (gated by `_tools_supported`, i.e.
   `device_name in ("GPU","CPU")`); the **NPU is excluded** — it has a hard prompt cap and
   small NPU-class models can't drive agent loops, so when the NPU serves the request we
@@ -44,21 +44,20 @@ OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
 
 ## Environment
 
-- Primary: Windows 11, Python 3.10+
-- Cross-platform: scripts use `#requires -Version 7.0` and branch on
-  `$IsWindows`. Linux + PowerShell 7 is confirmed working (user-reported
-  on Core Ultra 7 258V with NPU + GPU, issue #6). There is no install.sh —
-  Linux runs the same install.ps1 via pwsh. On Linux, NPU/GPU need the
-  Intel userspace drivers installed or only CPU is detected; the Linux NPU
-  stack (`intel-npu-driver`) is less mature than Windows.
-- Intel Core Ultra (NPU) + Intel ARC 140V 16GB (GPU)
-- OpenVINO 2026.1+ with openvino_genai
+- Primary: Linux + Windows dual-platform
+- Linux: `install.sh` — bash, uses ANSI colours, `curl`, `fuser`
+- Windows: `install.ps1` — PowerShell 7, branches on `$IsWindows`
+- Python 3.10+, OpenVINO 2026.1+ with openvino_genai
 - venv in `venv/`, activate before running
+- On Linux, NPU/GPU need the Intel userspace drivers installed or only
+  CPU is detected; the Linux NPU stack (`intel-npu-driver`) is less
+  mature than Windows.
 
 ## Development preferences
 
 - Keep it simple. One file (`nollama.py`) is fine. Don't split into modules unless it gets unwieldy.
-- PowerShell for install/launch scripts (Windows-native users).
+- `install.sh`/`download-model.sh`/`start-openclaw.sh` for Linux (bash),
+  `install.ps1`/`download-model.ps1`/`start-openclaw.ps1` for Windows (PowerShell).
 - Runtime flags over hardcoded config (e.g. `--port`, `--device`).
 - When testing, use small payloads / short prompts. Don't run full model loads unless needed.
 - VLM prompts must be dead simple for small models (3B). One question, one answer, minimal JSON. All logic in Python, not in the prompt.

@@ -18,19 +18,26 @@ NVIDIA. See [Agent tools & coding assistants](#agent-tools--coding-assistants-vs
 
 ## Quick start
 
+**Linux:**
+```bash
+./install.sh
+./start.sh
+```
+
+**Windows:**
 ```powershell
 .\install.ps1
 .\start.ps1
 ```
 
-That's it. `install.ps1` detects your hardware, lets you pick a model,
-downloads it, and generates `start.ps1`. The launcher waits for the
+That's it. `install.sh` (or `install.ps1` on Windows) detects your hardware, lets you pick a model,
+downloads it, and generates `start.sh` (or `start.ps1`). The launcher waits for the
 model to load (with a progress indicator), then opens the built-in
 chat UI in your browser at http://localhost:8000.
 
 ## Recommended models
 
-New here, or re-running `install.ps1`? Pick a **use-case** in the menu — here are
+New here, or re-running `install.sh`/`install.ps1`? Pick a **use-case** in the menu — here are
 the proven models per role on a Core Ultra laptop (NPU + ARC iGPU):
 
 | Use-case | Role | Pick in the menu | HuggingFace | Size |
@@ -109,12 +116,13 @@ that Ollama doesn't tell.
 
 Tested with `benchmark.py` — 1 warmup + 5 runs, outliers discarded.
 
-```powershell
+```bash
 # Text-only (no images required)
 python benchmark.py --llm-only
 
 # With VLM tests — provide 4 images: two "same vehicle" + two "different"
-python benchmark.py --images-dir C:\path\to\images
+python benchmark.py --images-dir /path/to/images      # Linux
+python benchmark.py --images-dir C:\path\to\images    # Windows
 python benchmark.py --same-1 a.jpg --same-2 b.jpg --diff-1 c.jpg --diff-2 d.jpg
 ```
 
@@ -185,7 +193,7 @@ served via Ollama (GGUF Q4_K_M) on the RTX 5090 for context. 1 warmup +
 3 runs. The "count 1-100" test (`max_tokens=4096`, no-think) is the
 cleanest cross-stack number — long output, steady-state, no thinking confound.
 
-```powershell
+```bash
 # Each NoLlama device — restart the server with --device <name> first
 python benchmark.py --label npu --runs 3 --llm-only
 python benchmark.py --label igpu --runs 3 --llm-only
@@ -265,51 +273,54 @@ NoLlama is a different target: your laptop.
 | Built-in web UI | No (add OpenWebUI) | **Yes** |
 | Auto device detection | No | **Yes** |
 | Dual-device routing | One model per instance | **NPU chat + GPU vision, simultaneously** |
-| Config | JSON, manual | Zero — `install.ps1` and go |
+| Config | JSON, manual | Zero — `install.sh`/`install.ps1` and go |
 
 OVMS is a proper inference server. NoLlama is the thing that makes
 your Core Ultra feel like Ollama already ran on it.
 
 ## Usage
 
-```powershell
+```bash
 # Auto-detect (picks best device)
-python nollama.py
+./start-template.sh
 
 # Force a specific device
-python nollama.py --device NPU
-python nollama.py --device GPU
-python nollama.py --device CPU
+./start-template.sh --device NPU
+./start-template.sh --device GPU
+./start-template.sh --device CPU
 
 # Dual mode: NPU chat + GPU vision
-python nollama.py --model-dir model --gpu-model-dir gpu-model
+./start-template.sh --model-dir model --gpu-model-dir gpu-model
 
 # Different port
-python nollama.py --port 9000
+./start-template.sh --port 9000
 
 # Change the default idle-unload timeout (default is 1800 = 30 min)
-python nollama.py --idle-timeout 600     # unload after 10 min idle
-python nollama.py --idle-timeout 0       # never unload — keep models loaded forever
+./start-template.sh --idle-timeout 600     # unload after 10 min idle
+./start-template.sh --idle-timeout 0       # never unload — keep models loaded forever
 
 # Log every inbound API request (method, path, User-Agent, body) — handy when
 # wiring up a new agent client and you need to see exactly what it sends
-python nollama.py --debug
+./start-template.sh --debug
 
 # Report a real Ollama version on /api/version so VS Code's Ollama client
 # accepts the server (needed for VS Code Copilot Chat in Ollama mode)
-python nollama.py --vscode-compat
+./start-template.sh --vscode-compat
 
 # Prefix (KV) caching is ON by default for GPU/CPU LLM slots — a repeated prompt
 # prefix is prefilled once, not every turn (big win for agent loops, ~47x on a
 # cached turn). Tune the pool size, or disable it:
-python nollama.py --cache-size-gb 4     # larger KV-cache pool (default 2 GB)
-python nollama.py --no-prompt-cache     # disable prefix caching
+./start-template.sh --cache-size-gb 4     # larger KV-cache pool (default 2 GB)
+./start-template.sh --no-prompt-cache     # disable prefix caching
 
 # Pre-warm the cache at startup so the FIRST agent turn is fast too (not just
 # turn 2+). The file auto-populates from the first big prompt served, so the
 # workflow is: run once, then restart with --prewarm to skip the cold prefill.
-python nollama.py --prewarm prewarm.json
+./start-template.sh --prewarm prewarm.json
 ```
+
+After running `install.sh` you can use the auto-generated `start.sh` as a shortcut
+(it has the right device and model paths baked in).
 
 ### Idle unload
 
@@ -440,8 +451,8 @@ NoLlama can drive tool-calling coding agents — the model emits function calls,
 NoLlama parses them into OpenAI/Ollama `tool_calls`, and the agent acts on the
 results.
 
-![OpenClaw running locally against NoLlama on an Intel iGPU — start-openclaw.ps1 brings up NoLlama (GPU, Qwen2.5-Coder-7B), pre-warms the cache, and the agent replies](screenshots/openclaw-1-Skjermbilde2026-06-28_113203.png)
-*OpenClaw driving a local Qwen2.5-Coder model on an Intel iGPU via NoLlama — one command (`./start-openclaw.ps1`), no cloud, no NVIDIA.*
+![OpenClaw running locally against NoLlama on an Intel iGPU — start-openclaw.sh/ps1 brings up NoLlama (GPU, Qwen2.5-Coder-7B), pre-warms the cache, and the agent replies](screenshots/openclaw-1-Skjermbilde2026-06-28_113203.png)
+*OpenClaw driving a local Qwen2.5-Coder model on an Intel iGPU via NoLlama — one command (`./start-openclaw.sh` on Linux, `./start-openclaw.ps1` on Windows), no cloud, no NVIDIA.*
 
 > **Tool calling runs on GPU/iGPU and CPU — not the NPU.** The NPU has a hard
 > prompt cap and small NPU-class models can't reliably drive agent loops, so
@@ -467,7 +478,10 @@ and bare-JSON outputs — so most instruct/coder models work.
 **VS Code Copilot Chat** (0.53+) — point it at the Ollama API and start the
 server with `--vscode-compat` so VS Code accepts the version handshake:
 
-```powershell
+```bash
+# Linux
+./start-template.sh --gpu-model-dir gpu-coder-model --vscode-compat
+# Windows
 python nollama.py --gpu-model-dir gpu-coder-model --vscode-compat
 ```
 
@@ -481,17 +495,23 @@ address the model as `<name>@GPU` so tool requests hit the GPU, not the NPU).
 
 **Install OpenClaw** (once):
 
-```powershell
+```bash
 npm install -g openclaw@latest
 openclaw onboard --install-daemon
 ```
 
-Then **`start-openclaw.ps1`** is the one-command launcher (the NoLlama equivalent
-of `ollama launch openclaw`):
+Then **`start-openclaw.sh`** (Linux) or **`start-openclaw.ps1`** (Windows) is the one-command
+launcher (the NoLlama equivalent of `ollama launch openclaw`):
 
+```bash
+# Linux
+./start-openclaw.sh -Setup -Device GPU     # -Setup writes the `nollama` provider into openclaw.json
+./start-openclaw.sh -Device GPU            # subsequent runs
+```
 ```powershell
-./start-openclaw.ps1 -Setup -Device GPU     # -Setup writes the `nollama` provider into openclaw.json
-./start-openclaw.ps1 -Device GPU            # subsequent runs
+# Windows
+./start-openclaw.ps1 -Setup -Device GPU
+./start-openclaw.ps1 -Device GPU
 ```
 
 It starts NoLlama with the agent flags (`--device`, `--prewarm`, keep-loaded),
@@ -515,10 +535,10 @@ the first real turn is fast.
 
 ## Models
 
-`install.ps1` shows a curated menu of models known to work on Intel
-hardware. All pre-exported models are download-only (no conversion).
-The menu is defined in `models.json` — add entries when new models
-are verified.
+`install.sh` (or `install.ps1` on Windows) shows a curated menu of models
+known to work on Intel hardware. All pre-exported models are download-only
+(no conversion). The menu is defined in `models.json` — add entries when new
+models are verified.
 
 ### Gated or private models (HuggingFace token)
 
@@ -528,36 +548,53 @@ token](https://huggingface.co/settings/tokens) (the `hf_…` string) for
 **gated** models (ones that make you accept a license, e.g. Llama) or
 **private** repos. Pass it with `-HfToken`:
 
-```powershell
+```bash
+# Linux
+./install.sh --hf-token hf_xxxxxxxxxxxxxxxxxxxxx
+./download-model.sh some-org/gated-model --hf-token hf_xxxxxxxxxxxxxxxxxxxxx
+# Windows
 .\install.ps1 -HfToken hf_xxxxxxxxxxxxxxxxxxxxx
 .\download-model.ps1 some-org/gated-model -HfToken hf_xxxxxxxxxxxxxxxxxxxxx
 ```
 
-Note: `hf auth login` won't help on a first run — `install.ps1` is what
+Note: `hf auth login` won't help on a first run — `install.sh`/`install.ps1` is what
 installs the `hf` CLI in the first place, so there's no `hf` to log in
-with yet. `-HfToken` works on a clean machine because it sets `HF_TOKEN`
+with yet. `--hf-token`/`-HfToken` works on a clean machine because it sets `HF_TOKEN`
 before the download (which `huggingface_hub` reads automatically). If you
 already have an `hf auth login` token stored from elsewhere, that's used
-too — `-HfToken` is just the bootstrap-proof way.
+too — `--hf-token` is just the bootstrap-proof way.
 
 ### Adding models outside the menu
 
-Use `download-model.ps1` to grab any HuggingFace model:
+Use `download-model.sh` (Linux) or `download-model.ps1` (Windows) to grab any
+HuggingFace model:
 
-```powershell
-# Pre-exported OpenVINO model (just download)
-.\download-model.ps1 OpenVINO/Qwen3-8B-int4-cw-ov
+```bash
+# Linux: Pre-exported OpenVINO model (just download)
+./download-model.sh OpenVINO/Qwen3-8B-int4-cw-ov
 
 # Convert a HuggingFace model to OpenVINO
-.\download-model.ps1 Qwen/Qwen2.5-VL-3B-Instruct --convert --weight int8
+./download-model.sh Qwen/Qwen2.5-VL-3B-Instruct --convert --weight int8
 
 # With trust-remote-code (some models require this)
+./download-model.sh Qwen/Qwen2.5-VL-3B-Instruct --convert --weight int4 --trust
+```
+```powershell
+# Windows
+.\download-model.ps1 OpenVINO/Qwen3-8B-int4-cw-ov
+.\download-model.ps1 Qwen/Qwen2.5-VL-3B-Instruct --convert --weight int8
 .\download-model.ps1 Qwen/Qwen2.5-VL-3B-Instruct --convert --weight int4 --trust
 ```
 
 Models download to `~/models/<name>/`. Point NoLlama at them:
 
+```bash
+# Linux
+./start-template.sh --model-dir ~/models/my-model --device GPU
+./start-template.sh --model-dir model --gpu-model-dir ~/models/my-vlm
+```
 ```powershell
+# Windows
 python nollama.py --model-dir ~/models/my-model --device GPU
 python nollama.py --gpu-model-dir ~/models/my-vlm
 ```
@@ -652,25 +689,29 @@ locks. They don't interfere with each other.
 
 ```
 nollama.py              The server
-install.ps1             Setup wizard
-download-model.ps1      Download/convert any HuggingFace model
+install.sh              Setup wizard (Linux)
+install.ps1             Setup wizard (Windows)
+download-model.sh       Download/convert any HuggingFace model (Linux)
+download-model.ps1      Download/convert any HuggingFace model (Windows)
 benchmark.py            Device performance benchmark
-start.ps1               Auto-generated launcher (after install)
-start-openclaw.ps1      Launch NoLlama (caching + pre-warm) + OpenClaw together
+start-template.sh        Launcher template (Linux, always available)
+start.sh                Launcher (Linux, auto-generated after install)
+start.ps1               Launcher (Windows, auto-generated after install)
+start-openclaw.sh       Launch NoLlama + OpenClaw together (Linux)
+start-openclaw.ps1      Launch NoLlama + OpenClaw together (Windows)
 models.json             Curated model registry
 model/                  Primary model (NPU or GPU)
 gpu-model/              Secondary GPU model (dual mode)
 venv/                   Python virtual environment
 ```
 
-`model/`, `gpu-model/`, `venv/`, and `start.ps1` are gitignored.
+`model/`, `gpu-model/`, `venv/`, `start.sh`, and `start.ps1` are gitignored.
 The repo is pure code.
 
 ## Requirements
 
-- PowerShell 7+ (Windows PowerShell 5.1 is not supported; on Linux,
-  see [Microsoft's install
-  instructions](https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-linux))
+- **Linux:** bash, Python 3.10+, curl, fuser (psmisc)
+- **Windows:** PowerShell 7+ (Windows PowerShell 5.1 is not supported)
 - Python 3.10+
 - OpenVINO 2026.1+ with openvino-genai
 - At least one of:
@@ -679,18 +720,12 @@ The repo is pure code.
   - Any Intel CPU (slower, but works)
 - ~1-17 GB disk per model
 
-`install.ps1` handles the venv, dependencies, and model download.
-**There is no `install.sh`** — `install.ps1` *is* the cross-platform
-installer, and **Linux users must use it too** (there is no Bash
-alternative). On Linux/macOS run it with PowerShell 7
-(`pwsh ./install.ps1`, including flags like `-HfToken`); paths and link
-creation branch on `$IsWindows`. Windows is the primary platform, but
-**Linux is confirmed working** by user reports (Core Ultra 7 258V, NPU +
-GPU detected — see [#6](https://github.com/aweussom/NoLlama/issues/6));
-macOS is untested. On Linux, NPU and GPU detection needs the Intel
-userspace drivers installed (`intel-npu-driver` for the NPU, the GPU
-compute runtime for the iGPU) — without them only the CPU shows up. The
-NPU Linux stack is less battle-tested than Windows.
+`install.sh` (Linux) or `install.ps1` (Windows) handles the venv, dependencies,
+and model download. Both are fully supported — pick the one for your platform.
+On Linux, NPU and GPU detection needs the Intel userspace drivers installed
+(`intel-npu-driver` for the NPU, the GPU compute runtime for the iGPU) —
+without them only the CPU shows up. The NPU Linux stack is less battle-tested
+than Windows.
 
 ## Known limitations
 
@@ -720,7 +755,7 @@ local single-user tool.
   `test_npu_vlm_imagesize.py`.
 - **Ollama management endpoints are stubs.** `/api/pull`, `/api/delete`,
   `/api/copy` return success but don't do anything. Model management is
-  via `install.ps1` or `download-model.ps1`, not the API.
+  via `install.sh`/`install.ps1` or `download-model.sh`/`download-model.ps1`, not the API.
 - **No graceful shutdown.** Ctrl+C is abrupt. If you hit it mid-load,
   NPU/GPU resources may not free cleanly — usually resolves on next
   launch, occasionally needs a reboot.

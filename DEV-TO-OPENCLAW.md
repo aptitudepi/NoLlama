@@ -67,11 +67,14 @@ That was the moment it stopped being a tech demo and became a tool.
 
 Because nobody wants to juggle two servers and a config file, there's a launcher — the local equivalent of `ollama launch`:
 
-```powershell
+```bash
+# Linux
+./start-openclaw.sh
+# Windows
 .\start-openclaw.ps1
 ```
 
-![OpenClaw starting via start-openclaw.ps1 — device auto-detected as GPU, NoLlama reports ready with the prompt cache pre-warmed, then the agent replies "Hi there!"](screenshots/openclaw-1-Skjermbilde2026-06-28_113203.png)
+![OpenClaw starting via start-openclaw.sh/ps1 — device auto-detected as GPU, NoLlama reports ready with the prompt cache pre-warmed, then the agent replies "Hi there!"](screenshots/openclaw-1-Skjermbilde2026-06-28_113203.png)
 *One command: device auto-detected (the laptop's ARC iGPU), NoLlama up with the prompt cache already warm, OpenClaw connected to the local model — and it says hi. No NVIDIA in sight.*
 
 It auto-detected the GPU, started NoLlama with caching + pre-warm, wired OpenClaw up to point at it, and dropped me into the agent — all from one command.
@@ -111,7 +114,14 @@ What it **is**: a real, working personal agent for real-but-modest tasks, on har
 
 It's all MIT-licensed: **[github.com/aweussom/NoLlama](https://github.com/aweussom/NoLlama)**
 
-```powershell
+```bash
+# Linux
+./install.sh             # pick the "Coding agent" use-case, grab a Qwen2.5-Coder
+npm install -g openclaw@latest
+openclaw onboard --install-daemon
+./start-openclaw.sh      # auto-detects device, caching + pre-warm, launches OpenClaw
+
+# Windows
 .\install.ps1            # pick the "Coding agent" use-case, grab a Qwen2.5-Coder
 npm install -g openclaw@latest
 openclaw onboard --install-daemon

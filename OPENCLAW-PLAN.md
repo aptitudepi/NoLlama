@@ -54,15 +54,17 @@ name would route to the NPU whenever an NPU slot is loaded).
 - Must fit 16 GB (Arc 140V): an INT4 7B-class coder model is the sweet spot.
   Qwen3-30B-A3B falls back to CPU silently on 16 GB — avoid for an interactive agent.
 
-```powershell
-# OpenAI API on :8000 (default). Whatever your generated start.ps1 already does is fine,
-# as long as a GPU LLM is loaded. Example:
-.\start.ps1
+```bash
+# OpenAI API on :8000 (default). Whatever your generated start.sh (Linux)
+# or start.ps1 (Windows) already does is fine, as long as a GPU LLM is loaded.
+# Example:
+./start.sh                # Linux
+.\start.ps1               # Windows
 ```
 
 Confirm the GPU LLM is up and note its exact id:
 
-```powershell
+```bash
 # Should list an entry whose id ends in @GPU, e.g. "Qwen3-Coder@GPU"
 curl http://localhost:8000/v1/models
 ```
@@ -138,7 +140,7 @@ Give it a task that forces a tool call ("list the files in this folder", "read
 README.md"). Success = OpenClaw invokes a tool, NoLlama logs a tool turn on the
 `[GPU]` slot, OpenClaw acts on the result.
 
-Convenience launcher: **`start-openclaw.ps1`** (built) — the NoLlama equivalent of
+Convenience launcher: **`start-openclaw.sh`** (Linux) or **`start-openclaw.ps1`** (Windows) — the NoLlama equivalent of
 `ollama launch openclaw`. It reuses a NoLlama already on the port, or starts one with the
 agent flags (`--device`, `--idle-timeout 0`, `--prewarm`), waits for it to be ready, then
 runs `openclaw`. Params: `-ModelDir`, `-Device CPU|GPU`, `-Port`, `-Prewarm`, `-Openclaw`.
@@ -164,7 +166,7 @@ NoLlama + OpenClaw together.
      This makes OpenClaw work with the **bare** model name — no `@GPU` trick, no
      reliance on OpenClaw forwarding `@` verbatim. This is the clean version of
      what the launcher would otherwise paper over.
-   - **Wrapper-side (zero NoLlama code):** the `launch-openclaw.ps1` wrapper just
+   - **Wrapper-side (zero NoLlama code):** the `start-openclaw.sh`/`start-openclaw.ps1` wrapper just
      writes/ensures the `@GPU` id in `openclaw.json`. Works today, but fragile if
      OpenClaw mangles `@`.
 
